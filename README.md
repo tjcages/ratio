@@ -14,7 +14,11 @@ The paid build funds development and removes the work of compiling, signing, not
 ## What it records
 
 - Ratio counts time only for the foreground window.
-- For supported browsers, it can read the active tab and retains only the hostname.
+- For Dia, Safari, Chrome, Brave, Edge, and Arc, it can read open web pages and the active tab. Only the foreground page accumulates time.
+- Expand a browser with the chevron to see its pages. Pages inherit the browser's creating/consuming setting until you choose an individual page's arrow. Use **↩** to restore the browser default. Changing the browser default preserves page overrides.
+- Browser totals include their pages once. Reclassification updates today's time. Closed pages with recorded time remain visible for the day; duplicate tabs with the same URL share one page entry.
+- Page rules are specific to a browser and URL (including its query, excluding its fragment). Ratio saves a SHA-256 page identifier and hostname locally, never the full URL or page title. Titles appear while known in the current session; after relaunch, closed pages display their hostname. Earlier versions' website entries remain separate because they do not identify the originating browser.
+- Allow browser access under **System Settings → Privacy & Security → Automation → Ratio** when macOS asks. If access is unavailable, Ratio continues tracking the browser as an app and shows an explanation when expanded. Browser-internal pages use the browser's default.
 - App usage, classifications, daily history, and preferences stay in macOS UserDefaults on your Mac.
 - Update authentication is stored in Keychain.
 - The signed build can share one anonymous cumulative tracked-time total. It never sends app names, site names, window titles, classifications, or daily history. This is enabled by default and can be disabled from **Share Anonymous Total** in the right-click menu. Self-built copies do not report unless they have a valid purchaser update credential.
