@@ -3,6 +3,43 @@ import CoreGraphics
 import Sparkle
 import Security
 import CryptoKit
+import QuartzCore
+
+func isIgnoredApp(_ id: String, name: String) -> Bool {
+    let identifier = id.lowercased()
+    let name = name.lowercased().replacingOccurrences(of: " ", with: "")
+    return ["com.apple.usernotificationcenter", "com.apple.notificationcenterui"].contains(identifier)
+        || ["usernotificationcenter", "notificationcenter"].contains(name)
+}
+
+struct BrowserAdapter: Equatable {
+    let activeTab: String
+    let titleProperty: String
+    static let chromium = BrowserAdapter(activeTab: "active tab", titleProperty: "title")
+    static let safari = BrowserAdapter(activeTab: "current tab", titleProperty: "name")
+
+    // Detect actual capabilities instead of guessing from the browser's brand.
+    static func parse(_ data: Data) -> BrowserAdapter? {
+        guard let xml = try? XMLDocument(data: data, options: [.nodeLoadExternalEntitiesNever]) else { return nil }
+        let window = "//*[self::class[@name='window'] or self::class-extension[@extends='window']]"
+        func values(_ path: String) -> [String] { ((try? xml.nodes(forXPath: path)) ?? []).compactMap { $0.stringValue } }
+        let windowProperties = values(window + "/property/@name")
+        let tabProperties = values("//class[@name='tab']/property/@name")
+        guard !values(window + "/element[@type='tab']/@type").isEmpty,
+              tabProperties.contains("URL") else { return nil }
+        let active = ["active tab", "current tab", "selected tab"].first { windowProperties.contains($0) }
+        let title = ["title", "name"].first { tabProperties.contains($0) }
+        guard let active = active, let title = title else { return nil }
+        return BrowserAdapter(activeTab: active, titleProperty: title)
+    }
+    static func discover(_ url: URL?) -> BrowserAdapter? {
+        guard let url = url, let bundle = Bundle(url: url),
+              let file = bundle.object(forInfoDictionaryKey: "OSAScriptingDefinition") as? String,
+              let resource = bundle.resourceURL?.appendingPathComponent(file),
+              let data = try? Data(contentsOf: resource) else { return nil }
+        return parse(data)
+    }
+}
 
 // Pure accounting: unknown, paused, and idle time never enter the ratio.
 struct AppUsage: Codable {
@@ -47,11 +84,12 @@ struct BrowserSnapshot {
     var active: BrowserPage?
     var error: String?
 
-    static func read(id: String, name: String) -> BrowserSnapshot {
-        let activeTab = id == "com.apple.Safari" ? "current tab" : "active tab"
-        let titleProperty = id == "com.apple.Safari" ? "name" : "title"
+    static func read(id: String, name: String, adapter: BrowserAdapter) -> BrowserSnapshot {
+        let activeTab = adapter.activeTab
+        let titleProperty = adapter.titleProperty
+        let escapedID = id.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let source = """
-        tell application id "\(id)"
+        tell application id "\(escapedID)"
             with timeout of 5 seconds
                 set pageRows to {}
                 set activeURL to ""
@@ -62,7 +100,12 @@ struct BrowserSnapshot {
                     repeat with browserWindow in windows
                         repeat with browserTab in tabs of browserWindow
                             try
-                                set end of pageRows to {URL of browserTab, \(titleProperty) of browserTab}
+                                set tabURL to URL of browserTab
+                                set tabTitle to ""
+                                try
+                                    set tabTitle to \(titleProperty) of browserTab
+                                end try
+                                set end of pageRows to {tabURL, tabTitle}
                             end try
                         end repeat
                     end repeat
@@ -74,6 +117,9 @@ struct BrowserSnapshot {
         var failure: NSDictionary?
         let result = NSAppleScript(source: source)?.executeAndReturnError(&failure)
         if let failure = failure {
+            if CommandLine.arguments.contains("--browser-test") {
+                print("Browser diagnostic: \(failure[NSAppleScript.errorNumber] ?? "unknown") · \(failure[NSAppleScript.errorBriefMessage] ?? "No detail")")
+            }
             let denied = (failure[NSAppleScript.errorNumber] as? Int) == -1743
             return BrowserSnapshot(pages: [], error: denied
                 ? "Allow Ratio in System Settings → Privacy & Security → Automation."
@@ -116,7 +162,7 @@ struct Ledger: Codable {
     var create: Double = 0
     var apps: [String: AppUsage]? = [:] // Optional preserves totals saved by v0.1.
     mutating func record(_ seconds: Double, mode: String?, appID: String = "", appName: String = "") {
-        guard seconds > 0, seconds <= 3 else { return }
+        guard seconds > 0, seconds <= 3, !isIgnoredApp(appID, name: appName) else { return }
         if !appID.isEmpty {
             var usage = apps ?? [:]
             var entry = usage[appID] ?? AppUsage(name: appName)
@@ -147,8 +193,13 @@ struct Ledger: Codable {
         consume += usage.consumeSeconds ?? 0
         usage.unclassified = mode == nil ? usage.seconds : 0; apps?[id] = usage
     }
-
-
+    mutating func removeIgnoredApps() {
+        for (id, usage) in apps ?? [:] where isIgnoredApp(id, name: usage.name) {
+            create = max(0, create - (usage.createSeconds ?? 0))
+            consume = max(0, consume - (usage.consumeSeconds ?? 0))
+            apps?.removeValue(forKey: id)
+        }
+    }
 }
 
 struct DaySummary: Codable {
@@ -277,7 +328,7 @@ final class AppListView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         panelBackground.setFill(); NSBezierPath(rect: bounds).fill()
         guard let owner = owner else { return }
-        let rows = (owner.ledger.apps ?? [:]).sorted {
+        let rows = (owner.ledger.apps ?? [:]).filter { !isIgnoredApp($0.key, name: $0.value.name) }.sorted {
             ($0.value.lastUsed ?? 0) == ($1.value.lastUsed ?? 0) ? $0.value.seconds > $1.value.seconds : ($0.value.lastUsed ?? 0) > ($1.value.lastUsed ?? 0)
         }
         let total = rows.reduce(0) { $0 + $1.value.seconds }
@@ -321,6 +372,61 @@ final class ReviewButton: GridButton {
 }
 final class ReviewListView: NSView {
     override var isFlipped: Bool { true }
+}
+
+final class ScrollingTitle: NSView {
+    let text: String
+    let color: NSColor
+    private let textLayer = CATextLayer()
+    private var travel: CGFloat = 0
+    static let pause: Double = 2
+    static let pointsPerSecond: Double = 24
+
+    init(text: String, color: NSColor, frame: NSRect) {
+        self.text = text; self.color = color
+        super.init(frame: frame)
+        wantsLayer = true; layer?.masksToBounds = true
+        textLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        textLayer.string = NSAttributedString(string: text, attributes: [.font: interfaceFont, .foregroundColor: color])
+        layer?.addSublayer(textLayer)
+        setAccessibilityElement(true); setAccessibilityRole(.staticText)
+        setAccessibilityValue(text); toolTip = text
+        updateGeometry()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    static func distance(textWidth: CGFloat, availableWidth: CGFloat) -> CGFloat { max(0, ceil(textWidth) - availableWidth) }
+    static func motion(_ distance: CGFloat) -> CAKeyframeAnimation {
+        let moving = Double(distance) / pointsPerSecond
+        let duration = 2 * pause + 2 * moving
+        let animation = CAKeyframeAnimation(keyPath: "transform.translation.x")
+        animation.values = [0, 0, -distance, -distance, 0]
+        animation.keyTimes = [0, NSNumber(value: pause / duration), NSNumber(value: (pause + moving) / duration), NSNumber(value: (2 * pause + moving) / duration), 1]
+        animation.duration = duration; animation.repeatCount = .infinity
+        animation.calculationMode = .linear
+        return animation
+    }
+    private func updateGeometry() {
+        let width = ceil((text as NSString).size(withAttributes: [.font: interfaceFont]).width) + 2
+        travel = Self.distance(textWidth: width, availableWidth: bounds.width)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        textLayer.frame = NSRect(x: 0, y: 0, width: max(width, bounds.width), height: bounds.height)
+        textLayer.contentsScale = window?.backingScaleFactor ?? 2
+        CATransaction.commit()
+    }
+    override func layout() { super.layout(); updateGeometry(); syncVisibility() }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); syncVisibility() }
+    func syncVisibility() {
+        let animate = travel > 1 && window?.isVisible == true && !isHiddenOrHasHiddenAncestor
+            && !visibleRect.isEmpty && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if animate {
+            if textLayer.animation(forKey: "title-scroll") == nil { textLayer.add(Self.motion(travel), forKey: "title-scroll") }
+        } else {
+            textLayer.removeAnimation(forKey: "title-scroll")
+        }
+    }
+    var isScrolling: Bool { textLayer.animation(forKey: "title-scroll") != nil }
+    var scrollPosition: CGFloat { textLayer.presentation()?.transform.m41 ?? 0 }
 }
 
 final class HistoryListView: NSView {
@@ -587,7 +693,7 @@ final class RatioView: NSView {
             for (i, row) in rows.enumerated() {
                 let y = CGFloat(i * 44)
                 let child = row.browserID != nil
-                let labelX: CGFloat = row.expandable ? 40 : child ? 32 : 16
+                let labelX: CGFloat = row.expandable ? 28 : child ? 32 : 16
                 if row.expandable {
                     let expanded = owner?.expandedBrowsers.contains(row.id) == true || reviewingPending
                     let disclosure = ReviewButton(title: expanded ? "⌄" : "›", target: owner, action: #selector(AppDelegate.toggleBrowser(_:)))
@@ -598,11 +704,10 @@ final class RatioView: NSView {
                     disclosure.isEnabled = !reviewingPending
                     reviewList.addSubview(disclosure)
                 }
-                let label = NSTextField(labelWithString: row.name)
-                label.font = interfaceFont; label.textColor = row.message ? .secondaryLabelColor : selectedMode(row.id) == nil ? unclassifiedColor : panelText
-                label.lineBreakMode = .byTruncatingTail
+                let labelColor: NSColor = row.message ? .secondaryLabelColor : selectedMode(row.id) == nil ? unclassifiedColor : panelText
+                let label = ScrollingTitle(text: row.name, color: labelColor,
+                    frame: NSRect(x: labelX, y: y + (row.detail.isEmpty ? 13 : 5), width: (row.message ? 344 : child ? 151 : 177) - labelX, height: 18))
                 label.toolTip = row.message ? row.detail : row.name + (child ? " · " + (owner?.ledger.apps?[row.id]?.name ?? "") : "")
-                label.frame = NSRect(x: labelX, y: y + (row.detail.isEmpty ? 13 : 5), width: (row.message ? 344 : child ? 151 : 177) - labelX, height: 18)
                 reviewList.addSubview(label)
                 if !row.detail.isEmpty {
                     let detail = NSTextField(labelWithString: row.detail)
@@ -618,7 +723,7 @@ final class RatioView: NSView {
                     time.frame = NSRect(x: child ? 153 : 178, y: y + 13, width: child ? 71 : 86, height: 18)
                     reviewList.addSubview(time)
                     if child {
-                        let overridden = owner?.rules[row.id] != nil
+                        let overridden = owner?.rules[row.id] == "create" || owner?.rules[row.id] == "consume" || (owner?.rules[row.id] != "inherit" && owner?.pageDefault(row.id) != nil)
                         let inherit = ReviewButton(title: overridden ? "↩" : "·", target: owner, action: #selector(AppDelegate.inheritPage(_:)))
                         inherit.siteID = row.id; inherit.isBordered = false; inherit.isEnabled = overridden
                         inherit.frame = NSRect(x: 228, y: y, width: 44, height: 44)
@@ -660,6 +765,7 @@ final class RatioView: NSView {
                 time.attributedStringValue = value
             }
         }
+        for case let label as ScrollingTitle in reviewList.subviews { label.syncVisibility() }
         ratioTab.state = selectedTab == 0 ? .on : .off; appsTab.state = selectedTab == 0 ? .off : .on
         let height = max(244, (owner?.ledger.apps?.count ?? 0) * 56)
         appList.setFrameSize(NSSize(width: 360, height: height)); appList.needsDisplay = true
@@ -875,8 +981,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var knownPages: [String: BrowserPage] = [:]
     var browserGeneration = 0
     let browserQueue = DispatchQueue(label: "ratio.browser-reader", qos: .utility)
-    let browsers = ["com.apple.Safari", "com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac", "company.thebrowser.Browser", "company.thebrowser.dia"]
-    let consumeSites = ["x.com", "twitter.com", "youtube.com", "reddit.com", "instagram.com", "tiktok.com", "netflix.com"]
+    var browserAdapters: [String: BrowserAdapter] = [
+        "com.apple.Safari": .safari, "com.google.Chrome": .chromium, "com.brave.Browser": .chromium,
+        "com.microsoft.edgemac": .chromium, "company.thebrowser.Browser": .chromium, "company.thebrowser.dia": .chromium
+    ]
+    var browsers: Set<String> { Set(browserAdapters.keys) }
+    var inspectedApps = Set<String>()
+    var ignoringForeground = false
+    func detectBrowser(_ id: String, url: URL?) {
+        guard inspectedApps.insert(id).inserted else { return }
+        if let adapter = BrowserAdapter.discover(url) { browserAdapters[id] = adapter }
+    }
+    let consumeSites = [
+        "facebook.com", "fb.com", "messenger.com", "instagram.com", "threads.net", "threads.com",
+        "x.com", "twitter.com", "t.co", "tiktok.com", "reddit.com", "redd.it", "linkedin.com",
+        "snapchat.com", "pinterest.com", "pin.it", "tumblr.com", "quora.com", "discord.com", "discordapp.com",
+        "bsky.app", "bsky.social", "mastodon.social", "mastodon.online", "mstdn.social", "fosstodon.org",
+        "mas.to", "misskey.io", "lemmy.world", "lemmy.ml", "youtube.com", "youtu.be", "twitch.tv",
+        "whatsapp.com", "telegram.org", "t.me", "weibo.com", "weibo.cn", "douyin.com", "xiaohongshu.com",
+        "zhihu.com", "bilibili.com", "vk.com", "ok.ru", "netflix.com"
+    ]
     let createSites = ["figma.com", "docs.google.com", "canva.com"]
     var mode: String?
     var switched = Date()
@@ -895,7 +1019,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var chromeSessionSites = Set<String>()
     var reviewWork: DispatchWorkItem?
     var pendingSites: [(key: String, value: AppUsage)] {
-        (ledger.apps ?? [:]).filter { ($0.value.unclassified ?? 0) >= 1 }.sorted { ($0.value.lastUsed ?? 0) > ($1.value.lastUsed ?? 0) }
+        (ledger.apps ?? [:]).filter { !isIgnoredApp($0.key, name: $0.value.name) && ($0.value.unclassified ?? 0) >= 1 }.sorted { ($0.value.lastUsed ?? 0) > ($1.value.lastUsed ?? 0) }
     }
     @objc func reviewSite(_ button: ReviewButton) {
         tick()
@@ -904,11 +1028,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         save(); render()
     }
     func effectiveMode(_ id: String) -> String? {
-        if let explicit = rules[id] { return explicit }
+        if let explicit = rules[id], explicit != "inherit" { return explicit }
         if let parent = ledger.apps?[id]?.browserID ?? knownPages[id]?.browserID {
+            if rules[id] != "inherit", let websiteDefault = pageDefault(id) { return websiteDefault }
             return rules[parent] ?? builtIns[parent]
         }
         return builtIns[id] ?? (id.hasPrefix("site:") ? siteMode(String(id.dropFirst(5))) : nil)
+    }
+    func pageDefault(_ id: String) -> String? {
+        guard let host = knownPages[id]?.host ?? ledger.apps?[id]?.name else { return nil }
+        return matches(host, domains: consumeSites) ? "consume" : nil
+    }
+    func matches(_ host: String, domains: [String]) -> Bool {
+        let host = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return domains.contains { host == $0 || host.hasSuffix("." + $0) }
     }
     func setClassification(_ id: String, value: String?) {
         let previous = effectiveMode(id)
@@ -916,14 +1049,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ledger.classifyPending(id, mode: effectiveMode(id), previousMode: previous)
         if browsers.contains(id) {
             // Parent totals are computed from children, never recorded a second time.
-            for (child, usage) in ledger.apps ?? [:] where usage.browserID == id && rules[child] == nil {
+            for (child, usage) in ledger.apps ?? [:] where usage.browserID == id && (rules[child] == nil || rules[child] == "inherit") {
                 ledger.classifyPending(child, mode: effectiveMode(child))
             }
         }
         mode = effectiveMode(activeID)
     }
     @objc func inheritPage(_ button: ReviewButton) {
-        tick(); setClassification(button.siteID, value: nil); save(); render()
+        tick(); setClassification(button.siteID, value: pageDefault(button.siteID) == nil ? nil : "inherit"); save(); render()
     }
     @objc func toggleBrowser(_ button: ReviewButton) {
         if expandedBrowsers.contains(button.siteID) { expandedBrowsers.remove(button.siteID) }
@@ -932,7 +1065,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         render()
     }
     func activityRows(pendingOnly: Bool) -> [ActivityRow] {
-        let entries = ledger.apps ?? [:]
+        let entries = (ledger.apps ?? [:]).filter { !isIgnoredApp($0.key, name: $0.value.name) }
         var parents = entries.filter { $0.value.browserID == nil }
         for usage in entries.values {
             if let id = usage.browserID, parents[id] == nil {
@@ -960,7 +1093,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard !pendingOnly || (usage.unclassified ?? 0) >= 1 || !visibleChildren.isEmpty else { continue }
             let isBrowser = browsers.contains(id)
             let openIDs = Set(browserSnapshots[id]?.pages.map { $0.id } ?? [])
-            let detail = isBrowser ? (browserSnapshots[id] == nil ? "Expand to read pages" : "\(openIDs.count) open page\(openIDs.count == 1 ? "" : "s") · default") : ""
+            let detail = isBrowser ? (browserSnapshots[id] == nil ? "" : "\(openIDs.count) open page\(openIDs.count == 1 ? "" : "s") · default") : ""
             rows.append(ActivityRow(id: id, name: usage.name, detail: detail,
                 seconds: usage.seconds + allChildren.reduce(0) { $0 + $1.value.seconds },
                 expandable: isBrowser, active: activeID == id || entries[activeID]?.browserID == id))
@@ -971,10 +1104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 rows.append(ActivityRow(id: "message:" + id, name: checkingBrowsers.contains(id) ? "Reading tabs…" : "No web pages open", detail: "Only the active page counts toward time.", seconds: 0, browserID: id, message: true))
             }
             for (child, page) in visibleChildren {
-                let overridden = rules[child] != nil
+                let explicit = rules[child]
+                let classification = explicit == "create" || explicit == "consume" ? "Page override"
+                    : explicit != "inherit" && pageDefault(child) != nil ? "Website default · consuming" : "Inherits " + usage.name
                 let state = openIDs.contains(child) ? "" : "Earlier · "
                 rows.append(ActivityRow(id: child, name: knownPages[child]?.title ?? page.name,
-                    detail: state + (overridden ? "Page override" : "Inherits " + usage.name),
+                    detail: state + classification,
                     seconds: page.seconds, browserID: id, active: child == activeID))
             }
         }
@@ -1016,6 +1151,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ledger.consume += usage.consumeSeconds ?? 0
                 ledger.apps?[id] = usage
             }
+        }
+
+        ledger.removeIgnoredApps()
+        for (id, usage) in ledger.apps ?? [:] where usage.browserID != nil && rules[id] == nil {
+            if let category = pageDefault(id) { ledger.classifyPending(id, mode: category) }
+        }
+        for app in NSWorkspace.shared.runningApplications {
+            if let id = app.bundleIdentifier { detectBrowser(id, url: app.bundleURL) }
+        }
+        for (id, usage) in ledger.apps ?? [:] where usage.browserID == nil {
+            detectBrowser(id, url: NSWorkspace.shared.urlForApplication(withBundleIdentifier: id))
         }
 
         updaterController = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
@@ -1094,7 +1240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let now = Date(); let elapsed = now.timeIntervalSince(lastTick); lastTick = now
         let oldDay = ledger.day; rollover()
         idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!) >= 60
-        if !paused && !sleeping && !idle && oldDay == ledger.day {
+        if !paused && !sleeping && !idle && !ignoringForeground && oldDay == ledger.day {
             if let page = knownPages[activeID], ledger.apps?[activeID] == nil { ledger.apps?[activeID] = page.usage }
             ledger.record(elapsed, mode: mode, appID: activeID, appName: knownPages[activeID]?.host ?? activeName)
             if browserID == "com.google.Chrome" && activeID.hasPrefix("site:") && mode == nil { chromeSessionSites.insert(activeID) }
@@ -1120,8 +1266,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func updateApp(_ app: NSRunningApplication?) {
         guard let app = app, app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
         activeSeconds = 0; browserGeneration += 1
+        ignoringForeground = isIgnoredApp(app.bundleIdentifier ?? "", name: app.localizedName ?? "")
+        if ignoringForeground {
+            activeID = ""; activeName = "System notification"; browserID = nil; mode = nil; lastTick = Date()
+            return
+        }
         activeID = app.bundleIdentifier ?? "process:\(app.localizedName ?? "unknown")"
         activeName = app.localizedName ?? "Unknown app"
+        detectBrowser(activeID, url: app.bundleURL)
         browserID = browsers.contains(activeID) ? activeID : nil
         browserName = activeName
         if ledger.apps == nil { ledger.apps = [:] }
@@ -1129,12 +1281,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mode = effectiveMode(activeID); switched = Date(); lastTick = Date()
     }
     func siteMode(_ host: String) -> String? {
-        if consumeSites.contains(where: { host == $0 || host.hasSuffix("." + $0) }) { return "consume" }
-        if createSites.contains(where: { host == $0 || host.hasSuffix("." + $0) }) { return "create" }
+        if matches(host, domains: consumeSites) { return "consume" }
+        if matches(host, domains: createSites) { return "create" }
         return nil
     }
     func checkBrowser(_ requestedID: String? = nil) {
-        guard let id = requestedID ?? browserID, browsers.contains(id), !checkingBrowsers.contains(id) else { return }
+        guard let id = requestedID ?? browserID, let adapter = browserAdapters[id], !checkingBrowsers.contains(id) else { return }
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first else {
             browserSnapshots[id] = BrowserSnapshot(pages: [])
             return
@@ -1143,7 +1295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let name = app.localizedName ?? ledger.apps?[id]?.name ?? id
         let generation = browserGeneration
         browserQueue.async { [weak self] in
-            let snapshot = BrowserSnapshot.read(id: id, name: name)
+            let snapshot = BrowserSnapshot.read(id: id, name: name, adapter: adapter)
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 // Keep the in-flight guard while settling time; tick can request another poll.
@@ -1289,9 +1441,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alignment = NSMutableParagraphStyle(); alignment.alignment = .center
         styledRatio.addAttribute(.paragraphStyle, value: alignment, range: NSRange(location: 0, length: styledRatio.length))
         panel.totals.attributedStringValue = styledRatio
-        let state = paused ? "PAUSED" : sleeping || idle ? "AWAY" : mode == "create" ? "CREATING" : mode == "consume" ? "CONSUMING" : "UNCLASSIFIED"
+        let state = paused ? "PAUSED" : ignoringForeground ? "SYSTEM" : sleeping || idle ? "AWAY" : mode == "create" ? "CREATING" : mode == "consume" ? "CONSUMING" : "UNCLASSIFIED"
         panel.title.stringValue = "CREATE:CONSUME"
-        let tracking = !paused && !sleeping && !idle
+        let tracking = !paused && !sleeping && !idle && !ignoringForeground
         let liveStatus = tracking ? "TRACKING" : state
         panel.context.stringValue = liveStatus
         panel.trackedTotal.stringValue = duration((ledger.apps ?? [:]).values.reduce(0) { $0 + $1.seconds })
@@ -1301,7 +1453,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.pause.setAccessibilityLabel(paused ? "Resume tracking" : "Pause tracking")
         panel.pause.toolTip = paused ? "Resume tracking" : "Pause tracking"
         panel.consume.state = mode == "consume" ? .on : .off; panel.create.state = mode == "create" ? .on : .off
-        let symbol = paused || idle || sleeping ? "Ⅱ" : mode == "create" ? "↑" : mode == "consume" ? "↓" : "?"
+        let symbol = paused || idle || sleeping || ignoringForeground ? "Ⅱ" : mode == "create" ? "↑" : mode == "consume" ? "↓" : "?"
         let statusTitle = total > 0 ? "\(symbol) \(c)/\(100-c)" : "\(symbol) Ratio"
         let statusColor: NSColor = !tracking ? .labelColor : mode == nil ? unclassifiedColor : mode == "create" ? createColor : consumeColor
         status.button?.attributedTitle = NSAttributedString(string: statusTitle, attributes: [.font: interfaceFont, .foregroundColor: statusColor])
@@ -1324,9 +1476,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 if CommandLine.arguments.contains("--browser-test") {
     _ = NSApplication.shared
-    let snapshot = BrowserSnapshot.read(id: "company.thebrowser.dia", name: "Dia")
+    let id = CommandLine.arguments.last == "--browser-test" ? "company.thebrowser.dia" : CommandLine.arguments.last!
+    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first,
+          let adapter = BrowserAdapter.discover(app.bundleURL) else {
+        print("Browser test unavailable: app is not running or has no compatible tab interface"); exit(1)
+    }
+    var result: BrowserSnapshot?
+    DispatchQueue.global(qos: .utility).async {
+        let value = BrowserSnapshot.read(id: id, name: app.localizedName ?? id, adapter: adapter)
+        DispatchQueue.main.async { result = value }
+    }
+    while result == nil { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+    let snapshot = result!
     if let error = snapshot.error { print("Browser read failed: " + error); exit(1) }
-    print("PASS: Dia snapshot contains \(snapshot.pages.count) unique web pages; active web page: \(snapshot.active != nil)")
+    print("PASS: \(id) snapshot contains \(snapshot.pages.count) unique web pages; active web page: \(snapshot.active != nil)")
 } else if CommandLine.arguments.contains("--preview") {
     _ = NSApplication.shared
     let suite = "com.visualizevalue.ratio.preview." + UUID().uuidString
@@ -1338,12 +1501,12 @@ if CommandLine.arguments.contains("--browser-test") {
     let dia = "company.thebrowser.dia"
     let pages = [
         BrowserPage(url: "https://example.com/brief", title: "Project brief", browserID: dia, browserName: "Dia")!,
-        BrowserPage(url: "https://example.com/reading", title: "Reading list", browserID: dia, browserName: "Dia")!,
-        BrowserPage(url: "https://figma.com/file/demo", title: "Design workspace", browserID: dia, browserName: "Dia")!
+        BrowserPage(url: "https://www.instagram.com/feed", title: "Instagram", browserID: dia, browserName: "Dia")!,
+        BrowserPage(url: "https://figma.com/file/demo", title: "Design workspace — a very long page title that scrolls into view", browserID: dia, browserName: "Dia")!
     ]
     owner.ledger = Ledger(day: dayKey())
     owner.ledger.apps = [dia: AppUsage(name: "Dia", lastUsed: 100), "editor": AppUsage(name: "Xcode", lastUsed: 10)]
-    owner.rules = [dia: "create", pages[1].id: "consume"]
+    owner.rules = [dia: "create"]
     owner.browserSnapshots[dia] = BrowserSnapshot(pages: pages, active: pages[0])
     for (index, page) in pages.enumerated() {
         owner.knownPages[page.id] = page; owner.ledger.apps?[page.id] = page.usage
@@ -1370,11 +1533,30 @@ if CommandLine.arguments.contains("--browser-test") {
     restorePage.performClick(nil)
     precondition(owner.rules[pages[0].id] == nil && owner.effectiveMode(pages[0].id) == "create")
     owner.paused = false
-    print("PASS: native disclosure, page classification, and restore-default controls")
+    let parentTitle = view.reviewList.subviews.compactMap { $0 as? ScrollingTitle }.first { $0.text == "Dia" }!
+    precondition(parentTitle.frame.minX == 28)
+    precondition(!owner.activityRows(pendingOnly: false).contains { $0.detail == "Expand to read pages" })
+    print("PASS: native disclosure, page classification, restore-default controls, and tighter spacing")
+    // Run the real Core Animation layer offscreen to verify its delay and lifecycle.
+    window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderFront(nil)
+    view.layoutSubtreeIfNeeded()
+    let movingTitle = view.reviewList.subviews.compactMap { $0 as? ScrollingTitle }.first { $0.text.contains("very long") }!
+    movingTitle.syncVisibility()
+    if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        precondition(movingTitle.isScrolling)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        precondition(abs(movingTitle.scrollPosition) < 0.1, "Title must pause before scrolling")
+        RunLoop.current.run(until: Date().addingTimeInterval(2.2))
+        precondition(movingTitle.scrollPosition < -1, "Long title must move after its delay")
+    } else { precondition(!movingTitle.isScrolling) }
+    window.orderOut(nil); movingTitle.syncVisibility()
+    precondition(!movingTitle.isScrolling, "Hidden titles must stop animating")
+    print("PASS: native marquee delay, live motion, reduced-motion preference, hidden-window stop")
     for variant in ["collapsed", "expanded", "light", "history"] {
         lightMode = variant == "light"
         owner.expandedBrowsers = variant == "collapsed" ? [] : [dia]
         view.showingHistory = variant == "history"
+        owner.idle = false
         view.applyTheme(); owner.render(); view.display()
         let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
         view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -1449,6 +1631,61 @@ if CommandLine.arguments.contains("--browser-test") {
     classifier.browserSnapshots[dia] = BrowserSnapshot(pages: [])
     precondition(!classifier.activityRows(pendingOnly: false).contains { $0.id == fresh.id }, "Closed, unvisited pages must disappear")
     print("PASS: persistence, private labels, new pages, closed pages, zero-time tabs")
+    for host in classifier.consumeSites {
+        precondition(classifier.siteMode(host) == "consume")
+        precondition(classifier.siteMode("www." + host) == "consume")
+        precondition(classifier.siteMode(host + ".example.org") == nil)
+    }
+    precondition(classifier.siteMode("NOTFACEBOOK.COM") == nil)
+    precondition(classifier.siteMode("M.FACEBOOK.COM.") == "consume")
+    let social = BrowserPage(url: "https://www.instagram.com/some-page", title: "Social page", browserID: dia, browserName: "Dia")!
+    classifier.ledger.apps?[social.id] = social.usage
+    classifier.setClassification(dia, value: "create")
+    precondition(classifier.effectiveMode(social.id) == "consume", "Website defaults must precede browser defaults")
+    classifier.ledger.record(2, mode: classifier.effectiveMode(social.id), appID: social.id, appName: social.host)
+    classifier.setClassification(social.id, value: "create")
+    classifier.setClassification(dia, value: "consume")
+    precondition(classifier.effectiveMode(social.id) == "create", "Explicit choices must precede website defaults")
+    classifier.setClassification(social.id, value: "inherit")
+    precondition(classifier.effectiveMode(social.id) == "consume")
+    classifier.setClassification(dia, value: "create")
+    precondition(classifier.effectiveMode(social.id) == "create" && classifier.ledger.apps?[social.id]?.createSeconds == 2)
+    let inheritedReload = AppDelegate()
+    inheritedReload.ledger = try! JSONDecoder().decode(Ledger.self, from: JSONEncoder().encode(classifier.ledger))
+    inheritedReload.rules = classifier.rules
+    precondition(inheritedReload.effectiveMode(social.id) == "create")
+    print("PASS: social domains, safe subdomain boundaries, explicit choices, forced inheritance")
+    for adapter in [BrowserAdapter.chromium, .safari, BrowserAdapter(activeTab: "selected tab", titleProperty: "name")] {
+        let dictionary = """
+        <dictionary><suite name="Browser"><class name="window"><property name="\(adapter.activeTab)"/><element type="tab"/></class><class name="tab"><property name="URL"/><property name="\(adapter.titleProperty)"/></class></suite></dictionary>
+        """
+        precondition(BrowserAdapter.parse(Data(dictionary.utf8)) == adapter)
+    }
+    let safariExtension = "<dictionary><suite><class-extension extends='window'><property name='current tab'/><element type='tab'/></class-extension><class name='tab'><property name='URL'/><property name='name'/></class></suite></dictionary>"
+    precondition(BrowserAdapter.parse(Data(safariExtension.utf8)) == .safari)
+    precondition(BrowserAdapter.parse(Data("<dictionary><suite><class name='window'/></suite></dictionary>".utf8)) == nil)
+    print("PASS: capability detection for Chromium, Safari, selected-tab variants, unsupported apps")
+    var excluded = Ledger(day: "test", consume: 2, create: 3)
+    let notificationID = "com.apple.UserNotificationCenter"
+    excluded.apps = [notificationID: AppUsage(name: "UserNotificationCenter", seconds: 2, createSeconds: 0, consumeSeconds: 2), "editor": AppUsage(name: "Editor", seconds: 3, createSeconds: 3, consumeSeconds: 0)]
+    excluded.removeIgnoredApps()
+    excluded.record(2, mode: "create", appID: notificationID, appName: "UserNotificationCenter")
+    precondition(excluded.apps?[notificationID] == nil && excluded.create == 3 && excluded.consume == 0)
+    precondition(isIgnoredApp("com.apple.notificationcenterui", name: "Notification Center"))
+    precondition(isIgnoredApp("process:UserNotificationCenter", name: "UserNotificationCenter"))
+    precondition(!isIgnoredApp("example.editor", name: "Editor"))
+    classifier.ledger.apps?[notificationID] = AppUsage(name: "UserNotificationCenter", seconds: 2, unclassified: 2)
+    precondition(!classifier.activityRows(pendingOnly: false).contains { $0.id == notificationID })
+    precondition(!classifier.pendingSites.contains { $0.key == notificationID })
+    print("PASS: Notification Center excluded from recording, saved totals, rows, and pending review")
+    precondition(ScrollingTitle.distance(textWidth: 100, availableWidth: 150) == 0)
+    precondition(ScrollingTitle.distance(textWidth: 300, availableWidth: 150) == 150)
+    let scrolling = ScrollingTitle.motion(120)
+    precondition(scrolling.duration == 14 && scrolling.keyTimes!.count == 5)
+    precondition(abs(scrolling.keyTimes![1].doubleValue * scrolling.duration - 2) < 0.001)
+    precondition(scrolling.calculationMode == .linear)
+    print("PASS: long-title overflow, two-second delay, steady scrolling, end pause")
+
 
     var l = Ledger(day: "test")
     l.record(2, mode: "create"); l.record(1, mode: "consume"); l.record(2, mode: nil)
