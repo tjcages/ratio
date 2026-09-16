@@ -54,7 +54,7 @@ struct AppUsage: Codable {
 }
 
 // Titles and URLs stay in memory. Persist only the host and an opaque page key.
-struct BrowserPage {
+struct BrowserPage: Codable {
     let id: String
     let browserID: String
     let browserName: String
@@ -79,10 +79,31 @@ struct BrowserPage {
     var usage: AppUsage { AppUsage(name: host, browserID: browserID, browserName: browserName) }
 }
 
-struct BrowserSnapshot {
+struct BrowserSnapshot: Codable {
     var pages: [BrowserPage]
     var active: BrowserPage?
     var error: String?
+
+    static func readIsolated(id: String) -> BrowserSnapshot {
+        let process = Process()
+        process.executableURL = Bundle.main.executableURL
+        process.arguments = ["--browser-snapshot", id]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 15, execute: timeout)
+            defer { timeout.cancel() }
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            if process.terminationStatus == 0, let snapshot = try? JSONDecoder().decode(BrowserSnapshot.self, from: data) {
+                return snapshot
+            }
+        } catch {}
+        return BrowserSnapshot(pages: [], error: "Tabs unavailable. Expand to retry.")
+    }
 
     static func read(id: String, name: String, adapter: BrowserAdapter) -> BrowserSnapshot {
         let activeTab = adapter.activeTab
@@ -1032,7 +1053,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var browserSnapshots: [String: BrowserSnapshot] = [:]
     var knownPages: [String: BrowserPage] = [:]
     var browserGeneration = 0
-    let browserQueue = DispatchQueue(label: "ratio.browser-reader", qos: .utility)
+    let browserQueue = DispatchQueue(label: "ratio.browser-reader", qos: .userInitiated, attributes: .concurrent)
     var browserAdapters: [String: BrowserAdapter] = [
         "com.apple.Safari": .safari, "com.google.Chrome": .chromium, "com.brave.Browser": .chromium,
         "com.microsoft.edgemac": .chromium, "company.thebrowser.Browser": .chromium, "company.thebrowser.dia": .chromium
@@ -1421,7 +1442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return nil
     }
     func checkBrowser(_ requestedID: String? = nil) {
-        guard let id = requestedID ?? browserID, let adapter = browserAdapters[id], !checkingBrowsers.contains(id) else { return }
+        guard let id = requestedID ?? browserID, browserAdapters[id] != nil, !checkingBrowsers.contains(id) else { return }
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first else {
             browserSnapshots[id] = BrowserSnapshot(pages: [])
             return
@@ -1430,7 +1451,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let name = app.localizedName ?? ledger.apps?[id]?.name ?? id
         let generation = browserGeneration
         browserQueue.async { [weak self] in
-            let snapshot = BrowserSnapshot.read(id: id, name: name, adapter: adapter)
+            let snapshot = BrowserSnapshot.readIsolated(id: id)
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 // Keep the in-flight guard while settling time; tick can request another poll.
@@ -1612,7 +1633,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) { save(); reportTelemetry() }
 }
 
-if CommandLine.arguments.contains("--browser-test") {
+if CommandLine.arguments.contains("--browser-test") || CommandLine.arguments.contains("--browser-snapshot") {
     _ = NSApplication.shared
     let id = CommandLine.arguments.last == "--browser-test" ? "company.thebrowser.dia" : CommandLine.arguments.last!
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first,
@@ -1621,11 +1642,17 @@ if CommandLine.arguments.contains("--browser-test") {
     }
     var result: BrowserSnapshot?
     DispatchQueue.global(qos: .utility).async {
-        let value = BrowserSnapshot.read(id: id, name: app.localizedName ?? id, adapter: adapter)
+        let value = CommandLine.arguments.contains("--browser-snapshot")
+            ? BrowserSnapshot.read(id: id, name: app.localizedName ?? id, adapter: adapter)
+            : BrowserSnapshot.readIsolated(id: id)
         DispatchQueue.main.async { result = value }
     }
     while result == nil { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
     let snapshot = result!
+    if CommandLine.arguments.contains("--browser-snapshot") {
+        FileHandle.standardOutput.write(try! JSONEncoder().encode(snapshot))
+        exit(0)
+    }
     if let error = snapshot.error { print("Browser read failed: " + error); exit(1) }
     print("PASS: \(id) snapshot contains \(snapshot.pages.count) unique web pages; active web page: \(snapshot.active != nil)")
 } else if CommandLine.arguments.contains("--preview") {
@@ -1776,6 +1803,24 @@ if CommandLine.arguments.contains("--browser-test") {
     returning.activateApp(id: dia, name: "Dia")
     precondition(returning.activeID == dia && returning.mode == "consume")
     print("PASS: page reclassification and browser reactivation keep totals creating")
+    let backgroundStarted = DispatchSemaphore(value: 0)
+    let releaseBackground = DispatchSemaphore(value: 0)
+    let backgroundFinished = DispatchSemaphore(value: 0)
+    let foregroundFinished = DispatchSemaphore(value: 0)
+    returning.browserQueue.async {
+        backgroundStarted.signal()
+        releaseBackground.wait()
+        backgroundFinished.signal()
+    }
+    precondition(backgroundStarted.wait(timeout: .now() + 2) == .success)
+    returning.browserQueue.async { foregroundFinished.signal() }
+    let foregroundResult = foregroundFinished.wait(timeout: .now() + 2)
+    releaseBackground.signal()
+    precondition(backgroundFinished.wait(timeout: .now() + 2) == .success)
+    precondition(foregroundResult == .success, "A blocked background browser must not delay foreground reads")
+    let transported = try! JSONDecoder().decode(BrowserSnapshot.self, from: JSONEncoder().encode(BrowserSnapshot(pages: [pageA], active: pageA)))
+    precondition(transported.active?.id == pageA.id && transported.pages.first?.title == pageA.title)
+    print("PASS: independent browser reads and snapshot transport")
     let collapsed = classifier.activityRows(pendingOnly: false)
     precondition(collapsed.count == 1 && collapsed[0].seconds == 5 && collapsed[0].active)
     classifier.expandedBrowsers.insert(dia)
