@@ -1390,19 +1390,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     func updateApp(_ app: NSRunningApplication?) {
         guard let app = app, app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        let id = app.bundleIdentifier ?? "process:\(app.localizedName ?? "unknown")"
+        detectBrowser(id, url: app.bundleURL)
+        activateApp(id: id, name: app.localizedName ?? "Unknown app")
+    }
+    func activateApp(id: String, name: String) {
         activeSeconds = 0; browserGeneration += 1
-        ignoringForeground = isIgnoredApp(app.bundleIdentifier ?? "", name: app.localizedName ?? "")
+        ignoringForeground = isIgnoredApp(id, name: name)
         if ignoringForeground {
             activeID = ""; activeName = "System notification"; browserID = nil; mode = nil; lastTick = Date()
             return
         }
-        activeID = app.bundleIdentifier ?? "process:\(app.localizedName ?? "unknown")"
-        activeName = app.localizedName ?? "Unknown app"
-        detectBrowser(activeID, url: app.bundleURL)
+        activeID = id
+        activeName = name
         browserID = browsers.contains(activeID) ? activeID : nil
         browserName = activeName
         if ledger.apps == nil { ledger.apps = [:] }
         if browserID != nil, ledger.apps?[activeID] == nil { ledger.apps?[activeID] = AppUsage(name: activeName) }
+        // Keep the last resolved page while the fresh tab lookup runs.
+        if browserID != nil, let page = browserSnapshots[id]?.active {
+            knownPages[page.id] = page
+            if ledger.apps?[page.id] == nil { ledger.apps?[page.id] = page.usage }
+            activeID = page.id; activeName = page.host
+        }
         mode = effectiveMode(activeID); switched = Date(); lastTick = Date()
     }
     func siteMode(_ host: String) -> String? {
@@ -1746,6 +1756,26 @@ if CommandLine.arguments.contains("--browser-test") {
     classifier.setClassification(dia, value: "create")
     precondition(classifier.ledger.create == 5, "Reclassifying a browser must be idempotent")
     print("PASS: browser inheritance, page overrides, reset, parent changes, exact accounting")
+    let returning = AppDelegate()
+    returning.ledger = Ledger(day: dayKey())
+    returning.ledger.apps = [dia: AppUsage(name: "Dia"), pageA.id: pageA.usage]
+    returning.knownPages[pageA.id] = pageA
+    returning.browserSnapshots[dia] = BrowserSnapshot(pages: [pageA], active: pageA)
+    returning.setClassification(dia, value: "consume")
+    returning.activeID = pageA.id
+    returning.ledger.record(3, mode: "consume", appID: pageA.id, appName: pageA.host)
+    returning.setClassification(pageA.id, value: "create")
+    precondition(returning.ledger.create == 3 && returning.ledger.consume == 0)
+    returning.activateApp(id: "editor", name: "Editor")
+    returning.activateApp(id: dia, name: "Dia")
+    precondition(returning.activeID == pageA.id && returning.mode == "create", "Returning to Dia must retain the page override while polling")
+    returning.ledger.record(2, mode: returning.mode, appID: returning.activeID, appName: returning.activeName)
+    precondition(returning.ledger.create == 5 && returning.ledger.consume == 0)
+    precondition(returning.ledger.apps?[dia]?.seconds == 0)
+    returning.browserSnapshots[dia] = BrowserSnapshot(pages: [])
+    returning.activateApp(id: dia, name: "Dia")
+    precondition(returning.activeID == dia && returning.mode == "consume")
+    print("PASS: page reclassification and browser reactivation keep totals creating")
     let collapsed = classifier.activityRows(pendingOnly: false)
     precondition(collapsed.count == 1 && collapsed[0].seconds == 5 && collapsed[0].active)
     classifier.expandedBrowsers.insert(dia)
