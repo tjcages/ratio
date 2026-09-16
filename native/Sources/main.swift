@@ -200,6 +200,33 @@ struct Ledger: Codable {
             apps?.removeValue(forKey: id)
         }
     }
+    mutating func deleteUsage(_ id: String) -> [String: AppUsage] {
+        let removed = (apps ?? [:]).filter { $0.key == id || $0.value.browserID == id }
+        for (key, usage) in removed {
+            create = max(0, create - (usage.createSeconds ?? 0))
+            consume = max(0, consume - (usage.consumeSeconds ?? 0))
+            apps?.removeValue(forKey: key)
+        }
+        return removed
+    }
+    mutating func restoreUsage(_ removed: [String: AppUsage]) {
+        if apps == nil { apps = [:] }
+        for (id, saved) in removed {
+            var current = apps?[id] ?? AppUsage(name: saved.name, browserID: saved.browserID, browserName: saved.browserName)
+            current.seconds += saved.seconds
+            current.unclassified = (current.unclassified ?? 0) + (saved.unclassified ?? 0)
+            current.createSeconds = (current.createSeconds ?? 0) + (saved.createSeconds ?? 0)
+            current.consumeSeconds = (current.consumeSeconds ?? 0) + (saved.consumeSeconds ?? 0)
+            current.lastUsed = max(current.lastUsed ?? 0, saved.lastUsed ?? 0)
+            apps?[id] = current
+            create += saved.createSeconds ?? 0; consume += saved.consumeSeconds ?? 0
+        }
+    }
+}
+
+struct UsageDeletion {
+    let day: String
+    let entries: [String: AppUsage]
 }
 
 struct DaySummary: Codable {
@@ -328,7 +355,7 @@ final class AppListView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         panelBackground.setFill(); NSBezierPath(rect: bounds).fill()
         guard let owner = owner else { return }
-        let rows = (owner.ledger.apps ?? [:]).filter { !isIgnoredApp($0.key, name: $0.value.name) }.sorted {
+        let rows = (owner.ledger.apps ?? [:]).filter { !isIgnoredApp($0.key, name: $0.value.name) && !owner.isHidden($0.key) }.sorted {
             ($0.value.lastUsed ?? 0) == ($1.value.lastUsed ?? 0) ? $0.value.seconds > $1.value.seconds : ($0.value.lastUsed ?? 0) > ($1.value.lastUsed ?? 0)
         }
         let total = rows.reduce(0) { $0 + $1.value.seconds }
@@ -371,7 +398,17 @@ final class ReviewButton: GridButton {
     }
 }
 final class ReviewListView: NSView {
+    weak var owner: AppDelegate?
+    var contextRows: [ActivityRow] = []
     override var isFlipped: Bool { true }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let index = Int(floor(point.y / 44))
+        guard index >= 0, index < contextRows.count, !contextRows[index].message else {
+            return owner?.activityMenu(nil)
+        }
+        return owner?.activityMenu(contextRows[index])
+    }
 }
 
 final class ScrollingTitle: NSView {
@@ -648,6 +685,7 @@ final class RatioView: NSView {
         owner?.render()
     }
     func refreshApps() {
+        guard owner?.contextMenuOpen != true else { return }
         selectedTab = 0
         ratioTab.isHidden = true; appsTab.isHidden = true
         totals.isHidden = true; context.isHidden = false
@@ -677,20 +715,27 @@ final class RatioView: NSView {
         notifications.setAccessibilityLabel(notifications.toolTip)
         notifications.needsDisplay = true
         let rows = owner?.activityRows(pendingOnly: reviewingPending) ?? []
+        reviewList.owner = owner; reviewList.contextRows = rows
         func selectedMode(_ id: String) -> String? { owner?.effectiveMode(id) }
-        let signature = rows.map { [$0.id, $0.name, $0.detail, selectedMode($0.id) ?? "?", String($0.active)].joined(separator: "\u{1f}") }.joined(separator: "\u{1e}")
-            + String(reviewingPending) + (owner?.expandedBrowsers.sorted().joined() ?? "")
+        let rowSignature = rows.map { row -> String in
+            [row.id, row.name, row.detail, selectedMode(row.id) ?? "?", String(row.active)].joined(separator: "\u{1f}")
+        }.joined(separator: "\u{1e}")
+        let expandedSignature = owner?.expandedBrowsers.sorted().joined() ?? ""
+        let hiddenSignature = owner?.hiddenEntries.keys.sorted().joined() ?? ""
+        let signature = [rowSignature, String(reviewingPending), expandedSignature, hiddenSignature, String(owner?.usageDeletion != nil)].joined(separator: "\u{1d}")
         if signature != reviewSignature {
             reviewSignature = signature
             let scrollOrigin = reviewScroll.contentView.bounds.origin
             reviewList.subviews.forEach { $0.removeFromSuperview() }
             if rows.isEmpty {
-                let empty = NSTextField(labelWithString: reviewingPending ? "All caught up." : "Activity will appear here.")
+                let empty = NSTextField(labelWithString: reviewingPending ? "All caught up." : owner?.hiddenEntries.isEmpty == false ? "Right-click Ratio to show hidden apps." : "Activity will appear here.")
                 empty.font = interfaceFont; empty.textColor = panelText
                 empty.frame = NSRect(x: 16, y: 13, width: 328, height: 18)
+                empty.menu = owner?.activityMenu(nil)
                 reviewList.addSubview(empty)
             }
             for (i, row) in rows.enumerated() {
+                let firstSubview = reviewList.subviews.count
                 let y = CGFloat(i * 44)
                 let child = row.browserID != nil
                 let labelX: CGFloat = row.expandable ? 28 : child ? 32 : 16
@@ -746,6 +791,10 @@ final class RatioView: NSView {
                 let pixel = 1 / (window?.backingScaleFactor ?? 2)
                 let line = NSView(frame: NSRect(x: child ? 32 : 0, y: y + 44 - pixel, width: child ? 328 : 360, height: pixel))
                 line.wantsLayer = true; line.layer?.backgroundColor = gridColor.cgColor; reviewList.addSubview(line)
+                if !row.message {
+                    let menu = owner?.activityMenu(row)
+                    for subview in reviewList.subviews.dropFirst(firstSubview) { subview.menu = menu }
+                }
             }
             reviewList.setFrameSize(NSSize(width: 360, height: max(220, rows.count * 44)))
             reviewScroll.contentView.scroll(to: NSPoint(x: 0, y: min(scrollOrigin.y, max(0, reviewList.frame.height - reviewScroll.contentView.bounds.height))))
@@ -956,7 +1005,7 @@ final class UpdateSignInView: NSView {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var updaterController: SPUStandardUpdaterController!
     var updaterStarted = false
     var signInView: UpdateSignInView?
@@ -965,6 +1014,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var resetUndoTimer: Timer?
     var history: [DaySummary] = []
     var rules: [String: String] = [:]
+    var hiddenEntries: [String: String] = [:]
+    var usageDeletion: UsageDeletion?
+    var contextMenuOpen = false
     var status: NSStatusItem!
     let popover = NSPopover()
     var outsideClickMonitor: Any?
@@ -1019,8 +1071,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var chromeSessionSites = Set<String>()
     var reviewWork: DispatchWorkItem?
     var pendingSites: [(key: String, value: AppUsage)] {
-        (ledger.apps ?? [:]).filter { !isIgnoredApp($0.key, name: $0.value.name) && ($0.value.unclassified ?? 0) >= 1 }.sorted { ($0.value.lastUsed ?? 0) > ($1.value.lastUsed ?? 0) }
+        (ledger.apps ?? [:]).filter { !isIgnoredApp($0.key, name: $0.value.name) && !isHidden($0.key) && ($0.value.unclassified ?? 0) >= 1 }.sorted { ($0.value.lastUsed ?? 0) > ($1.value.lastUsed ?? 0) }
     }
+    func isHidden(_ id: String) -> Bool {
+        if hiddenEntries[id] != nil { return true }
+        guard let parent = ledger.apps?[id]?.browserID ?? knownPages[id]?.browserID else { return false }
+        return hiddenEntries[parent] != nil
+    }
+    func hideUsage(_ id: String) {
+        let parentName = ledger.apps?.values.first { $0.browserID == id }?.browserName
+        guard let usage = ledger.apps?[id] ?? parentName.map({ AppUsage(name: $0) }) else { return }
+        // Use the saved hostname for page labels, never persist a browser title.
+        hiddenEntries[id] = usage.name + (usage.browserName.map { " (" + $0 + ")" } ?? "")
+    }
+    func deleteUsage(_ id: String) {
+        let removed = ledger.deleteUsage(id)
+        guard !removed.isEmpty else { return }
+        usageDeletion = UsageDeletion(day: ledger.day, entries: removed)
+        resetUndo = nil; resetUndoTimer?.invalidate(); resetUndoTimer = nil
+        if removed[activeID] != nil { activeSeconds = 0 }
+    }
+    func restoreDeletedUsage() {
+        guard let deletion = usageDeletion, deletion.day == ledger.day else { usageDeletion = nil; return }
+        ledger.restoreUsage(deletion.entries)
+        usageDeletion = nil
+    }
+    @objc func hideUsageAction(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? String else { return }
+        tick(); hideUsage(id); save(); render()
+    }
+    @objc func showUsageAction(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? String else { return }
+        hiddenEntries.removeValue(forKey: id); save(); render()
+    }
+    @objc func deleteUsageAction(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? String else { return }
+        tick(); deleteUsage(id); save(); render()
+    }
+    @objc func restoreDeletedUsageAction() { tick(); restoreDeletedUsage(); save(); render() }
+    func addUsageRecoveryItems(to menu: NSMenu) {
+        if usageDeletion?.day == ledger.day {
+            let undo = NSMenuItem(title: "Undo usage deletion", action: #selector(restoreDeletedUsageAction), keyEquivalent: "")
+            undo.target = self; menu.addItem(undo)
+        }
+        if !hiddenEntries.isEmpty {
+            let hidden = NSMenuItem(title: "Hidden apps and pages", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            for (id, name) in hiddenEntries.sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value.localizedStandardCompare($1.value) == .orderedAscending }) {
+                let show = NSMenuItem(title: "Show " + name, action: #selector(showUsageAction(_:)), keyEquivalent: "")
+                show.target = self; show.representedObject = id; submenu.addItem(show)
+            }
+            hidden.submenu = submenu; menu.addItem(hidden)
+        }
+    }
+    func activityMenu(_ row: ActivityRow?) -> NSMenu {
+        let menu = NSMenu(); menu.delegate = self
+        if let row = row, !row.message {
+            let hide = NSMenuItem(title: row.browserID == nil ? "Hide app from list" : "Hide page from list", action: #selector(hideUsageAction(_:)), keyEquivalent: "")
+            hide.toolTip = "Keeps tracking and includes this time in your ratio. Restore from Hidden apps and pages."
+            hide.target = self; hide.representedObject = row.id; menu.addItem(hide)
+            let delete = NSMenuItem(title: "Delete today's usage", action: #selector(deleteUsageAction(_:)), keyEquivalent: "")
+            delete.toolTip = row.expandable ? "Remove today's browser and page time. Future activity continues. Undo is available for this session." : "Remove today's time. Future activity continues. Undo is available for this session."
+            delete.target = self; delete.representedObject = row.id; menu.addItem(delete)
+            if usageDeletion != nil || !hiddenEntries.isEmpty { menu.addItem(.separator()) }
+        }
+        addUsageRecoveryItems(to: menu)
+        return menu
+    }
+    func menuWillOpen(_ menu: NSMenu) { contextMenuOpen = true }
+    func menuDidClose(_ menu: NSMenu) { contextMenuOpen = false }
     @objc func reviewSite(_ button: ReviewButton) {
         tick()
         setClassification(button.siteID, value: button.mode)
@@ -1088,8 +1207,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         var rows: [ActivityRow] = []
         for (id, usage) in sorted {
+            guard !isHidden(id) else { continue }
             let allChildren = children(id)
-            let visibleChildren = allChildren.filter { !pendingOnly || ($0.value.unclassified ?? 0) >= 1 }
+            let visibleChildren = allChildren.filter { !isHidden($0.key) && (!pendingOnly || ($0.value.unclassified ?? 0) >= 1) }
             guard !pendingOnly || (usage.unclassified ?? 0) >= 1 || !visibleChildren.isEmpty else { continue }
             let isBrowser = browsers.contains(id)
             let openIDs = Set(browserSnapshots[id]?.pages.map { $0.id } ?? [])
@@ -1101,7 +1221,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let error = browserSnapshots[id]?.error {
                 rows.append(ActivityRow(id: "message:" + id, name: "Tabs unavailable", detail: error, seconds: 0, browserID: id, message: true))
             } else if visibleChildren.isEmpty {
-                rows.append(ActivityRow(id: "message:" + id, name: checkingBrowsers.contains(id) ? "Reading tabs…" : "No web pages open", detail: "Only the active page counts toward time.", seconds: 0, browserID: id, message: true))
+                let allHidden = !allChildren.isEmpty && allChildren.allSatisfy { isHidden($0.key) }
+                let message = allHidden ? "All pages are hidden" : pendingOnly ? "No pages need categorizing" : checkingBrowsers.contains(id) ? "Reading tabs…" : "No web pages open"
+                let detail = allHidden ? "Show them from Hidden apps and pages." : "Only the active page counts toward time."
+                rows.append(ActivityRow(id: "message:" + id, name: message, detail: detail, seconds: 0, browserID: id, message: true))
             }
             for (child, page) in visibleChildren {
                 let explicit = rules[child]
@@ -1132,6 +1255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let data = defaults.data(forKey: "history"), let saved = try? JSONDecoder().decode([DaySummary].self, from: data) { history = saved }
         rules = (defaults.dictionary(forKey: "rules") as? [String: String] ?? [:]).filter { $0.value != "neutral" }
         expandedBrowsers = Set(defaults.stringArray(forKey: "expandedBrowsers") ?? [])
+        hiddenEntries = defaults.dictionary(forKey: "hiddenEntries") as? [String: String] ?? [:]
         telemetrySeconds = defaults.double(forKey: "anonymousTrackedSeconds")
         telemetryEnabled = defaults.object(forKey: "anonymousTotalsEnabled") == nil || defaults.bool(forKey: "anonymousTotalsEnabled")
         telemetryInstallID = defaults.string(forKey: "anonymousInstallID") ?? UUID().uuidString.lowercased()
@@ -1184,11 +1308,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.appearance = NSAppearance(named: .darkAqua)
         let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: clicks) { [weak self] _ in
-            guard let self = self, self.popover.isShown else { return }
+            guard let self = self, self.popover.isShown, !self.contextMenuOpen else { return }
             self.popover.performClose(nil)
         }
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
-            guard let self = self, self.popover.isShown else { return event }
+            guard let self = self, self.popover.isShown, !self.contextMenuOpen else { return event }
             if event.window !== self.panel.window && event.window !== self.status.button?.window {
                 self.popover.performClose(nil)
             }
@@ -1216,13 +1340,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 history.append(DaySummary(day: ledger.day, create: ledger.create, consume: ledger.consume))
                 history = Array(history.sorted { $0.day > $1.day }.prefix(30))
             }
-            ledger = Ledger(day: today); save()
+            ledger = Ledger(day: today); usageDeletion = nil; save()
         }
     }
     func save() {
         if let data = try? JSONEncoder().encode(ledger) { defaults.set(data, forKey: "ledger") }
         if let data = try? JSONEncoder().encode(history) { defaults.set(data, forKey: "history") }
         defaults.set(rules, forKey: "rules")
+        defaults.set(hiddenEntries, forKey: "hiddenEntries")
         defaults.set(telemetrySeconds, forKey: "anonymousTrackedSeconds")
     }
     func historyEntries() -> [DaySummary] {
@@ -1332,6 +1457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tick(); setClassification(activeID, value: value); save(); render()
     }
     @objc func resetAll() {
+        usageDeletion = nil
         if let snapshot = resetUndo {
             resetUndoTimer?.invalidate(); resetUndoTimer = nil
             ledger = snapshot.ledger; rules = snapshot.rules; activeSeconds = snapshot.activeSeconds
@@ -1365,6 +1491,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let telemetry = NSMenuItem(title: "Share Anonymous Total", action: #selector(toggleTelemetry), keyEquivalent: "")
             telemetry.target = self; telemetry.state = telemetryEnabled ? .on : .off; menu.addItem(telemetry)
             menu.addItem(.separator())
+            addUsageRecoveryItems(to: menu)
+            if usageDeletion != nil || !hiddenEntries.isEmpty { menu.addItem(.separator()) }
             let quit = NSMenuItem(title: "Quit Ratio", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
             quit.target = NSApp; menu.addItem(quit)
             if let button = status.button { menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button) }
@@ -1532,6 +1660,24 @@ if CommandLine.arguments.contains("--browser-test") {
     let restorePage = view.reviewList.subviews.compactMap { $0 as? ReviewButton }.first { $0.siteID == pages[0].id && $0.mode.isEmpty }!
     restorePage.performClick(nil)
     precondition(owner.rules[pages[0].id] == nil && owner.effectiveMode(pages[0].id) == "create")
+    let beforeMenuCreate = owner.ledger.create, beforeMenuConsume = owner.ledger.consume
+    let browserRow = owner.activityRows(pendingOnly: false).first { $0.id == dia }!
+    let context = owner.activityMenu(browserRow)
+    precondition(context.items[0].title == "Hide app from list" && context.items[1].title == "Delete today's usage")
+    let point = view.reviewList.convert(NSPoint(x: 100, y: 20), to: nil)
+    let event = NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+    precondition(view.reviewList.menu(for: event)?.items.first?.representedObject as? String == dia)
+    context.performActionForItem(at: 0)
+    precondition(owner.isHidden(dia) && !owner.activityRows(pendingOnly: false).contains { $0.id == dia })
+    let recovery = owner.activityMenu(nil)
+    recovery.items.first { $0.submenu != nil }!.submenu!.performActionForItem(at: 0)
+    precondition(!owner.isHidden(dia))
+    owner.activityMenu(browserRow).performActionForItem(at: 1)
+    precondition(owner.ledger.create == 0 && owner.ledger.consume == 0)
+    owner.activityMenu(nil).performActionForItem(at: 0)
+    precondition(owner.ledger.create == beforeMenuCreate && owner.ledger.consume == beforeMenuConsume)
+    precondition(owner.usageDeletion == nil)
+    print("PASS: native right-click targeting, hide/show menus, delete/undo actions")
     owner.paused = false
     let parentTitle = view.reviewList.subviews.compactMap { $0 as? ScrollingTitle }.first { $0.text == "Dia" }!
     precondition(parentTitle.frame.minX == 28)
@@ -1685,6 +1831,62 @@ if CommandLine.arguments.contains("--browser-test") {
     precondition(abs(scrolling.keyTimes![1].doubleValue * scrolling.duration - 2) < 0.001)
     precondition(scrolling.calculationMode == .linear)
     print("PASS: long-title overflow, two-second delay, steady scrolling, end pause")
+    let usageSuite = "com.visualizevalue.ratio.usage-tests." + UUID().uuidString
+    let usageDefaults = UserDefaults(suiteName: usageSuite)!
+    defer { usageDefaults.removePersistentDomain(forName: usageSuite) }
+    let manager = AppDelegate(defaults: usageDefaults)
+    manager.ledger = Ledger(day: "test")
+    manager.ledger.apps = [dia: AppUsage(name: "Dia"), pageA.id: pageA.usage, pageB.id: pageB.usage]
+    manager.rules = [dia: "create", pageB.id: "consume"]
+    manager.knownPages = [pageA.id: pageA, pageB.id: pageB]
+    manager.browserSnapshots[dia] = BrowserSnapshot(pages: [pageA, pageB], active: pageA)
+    manager.ledger.record(2, mode: "create", appID: dia, appName: "Dia")
+    manager.ledger.record(3, mode: "create", appID: pageA.id, appName: pageA.host)
+    manager.ledger.record(2, mode: "consume", appID: pageB.id, appName: pageB.host)
+    manager.ledger.record(1, mode: nil, appID: "editor", appName: "Editor")
+    manager.expandedBrowsers.insert(dia)
+    manager.hideUsage(pageA.id)
+    precondition(!manager.activityRows(pendingOnly: false).contains { $0.id == pageA.id })
+    precondition(manager.activityRows(pendingOnly: false).first { $0.id == dia }?.seconds == 7)
+    manager.hideUsage(pageB.id)
+    precondition(manager.activityRows(pendingOnly: false).contains { $0.message && $0.name == "All pages are hidden" })
+    manager.hiddenEntries.removeValue(forKey: pageB.id)
+    manager.hideUsage(dia); manager.hideUsage("editor")
+    precondition(manager.activityRows(pendingOnly: false).isEmpty && manager.pendingSites.isEmpty)
+    precondition(manager.ledger.create == 5 && manager.ledger.consume == 2)
+    manager.ledger.record(1, mode: "create", appID: pageA.id, appName: pageA.host)
+    precondition(manager.ledger.create == 6, "Hidden activity must keep tracking")
+    manager.save()
+    let hiddenSaved = usageDefaults.dictionary(forKey: "hiddenEntries") as! [String: String]
+    precondition(hiddenSaved[dia] == "Dia" && hiddenSaved[pageA.id] == "example.com (Dia)")
+    precondition(!hiddenSaved.values.contains("Project brief"))
+    manager.hiddenEntries = hiddenSaved
+    manager.hiddenEntries.removeValue(forKey: dia)
+    precondition(!manager.isHidden(dia) && manager.isHidden(pageA.id))
+    print("PASS: persistent app/page hiding, hidden children, unchanged totals, private labels")
+    manager.deleteUsage(dia)
+    precondition(manager.ledger.create == 0 && manager.ledger.consume == 0)
+    precondition(manager.ledger.apps?.count == 1 && manager.ledger.apps?["editor"]?.seconds == 1)
+    precondition(manager.rules[pageB.id] == "consume", "Deleting time must preserve classifications")
+    manager.ledger.apps?[pageA.id] = pageA.usage
+    manager.ledger.record(2, mode: "create", appID: pageA.id, appName: pageA.host)
+    manager.ledger.record(2, mode: nil, appID: "editor", appName: "Editor")
+    manager.restoreDeletedUsage()
+    precondition(manager.ledger.create == 8 && manager.ledger.consume == 2)
+    precondition(manager.ledger.apps?[pageA.id]?.seconds == 6 && manager.ledger.apps?["editor"]?.seconds == 3)
+    manager.restoreDeletedUsage()
+    precondition(manager.ledger.create == 8 && manager.ledger.consume == 2, "Undo must apply once")
+    print("PASS: browser deletion includes pages; undo preserves new and unrelated activity")
+    manager.deleteUsage(pageB.id)
+    precondition(manager.ledger.create == 8 && manager.ledger.consume == 0 && manager.ledger.apps?[pageA.id] != nil)
+    manager.ledger = Ledger(day: "tomorrow")
+    manager.restoreDeletedUsage()
+    precondition(manager.ledger.apps?.isEmpty == true && manager.usageDeletion == nil)
+    manager.ledger.apps = [pageA.id: pageA.usage]
+    manager.hiddenEntries = [:]; manager.hideUsage(dia)
+    precondition(manager.isHidden(pageA.id), "Synthetic browser parents must support hiding")
+    print("PASS: page-only deletion, day-bound undo, synthetic browser hiding")
+
 
 
     var l = Ledger(day: "test")
