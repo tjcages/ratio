@@ -105,13 +105,19 @@ func drawHistoryClock(in bounds: NSRect, color: NSColor) {
     NSGraphicsContext.restoreGraphicsState()
 }
 
+// Lucide Arrow Left geometry, drawn at the same scale as the other icons.
 func drawBackArrow(in bounds: NSRect, color: NSColor) {
+    NSGraphicsContext.saveGraphicsState()
+    let transform = AffineTransform(translationByX: bounds.midX - 7, byY: bounds.midY - 7)
+    var scaled = transform
+    scaled.scale(x: 14 / 24, y: 14 / 24)
+    (scaled as NSAffineTransform).concat()
     let p = NSBezierPath()
-    p.lineWidth = 1.6; p.lineCapStyle = .round; p.lineJoinStyle = .round
-    p.move(to: NSPoint(x: bounds.midX + 6, y: bounds.midY)); p.line(to: NSPoint(x: bounds.midX - 6, y: bounds.midY))
-    p.move(to: NSPoint(x: bounds.midX - 6, y: bounds.midY)); p.line(to: NSPoint(x: bounds.midX, y: bounds.midY + 6))
-    p.move(to: NSPoint(x: bounds.midX - 6, y: bounds.midY)); p.line(to: NSPoint(x: bounds.midX, y: bounds.midY - 6))
+    p.lineWidth = 2; p.lineCapStyle = .round; p.lineJoinStyle = .round
+    p.move(to: NSPoint(x: 19, y: 12)); p.line(to: NSPoint(x: 5, y: 12))
+    p.move(to: NSPoint(x: 12, y: 19)); p.line(to: NSPoint(x: 5, y: 12)); p.line(to: NSPoint(x: 12, y: 5))
     color.setStroke(); p.stroke()
+    NSGraphicsContext.restoreGraphicsState()
 }
 
 // Lucide Settings 2 geometry (ISC license).
@@ -680,157 +686,10 @@ struct UpdateCredential: Codable {
         guard status == errSecSuccess, let data = item as? Data else { return nil }
         return try? JSONDecoder().decode(Self.self, from: data)
     }
-    func store() -> Bool {
-        guard let data = try? JSONEncoder().encode(self) else { return false }
-        let key = [kSecClass: kSecClassGenericPassword, kSecAttrService: Self.service, kSecAttrAccount: "device"] as [CFString: Any]
-        let status = SecItemUpdate(key as CFDictionary, [kSecValueData: data] as CFDictionary)
-        if status == errSecSuccess { return true }
-        guard status == errSecItemNotFound else { return false }
-        var item = key; item[kSecValueData] = data; item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
-    }
-}
-
-final class CodeInputView: NSView, NSTextFieldDelegate {
-    var fields: [NSTextField] = []
-    var onSubmit: (() -> Void)?
-    var stringValue: String { fields.map { $0.stringValue }.joined() }
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        for index in 0..<6 {
-            let field = NSTextField(frame: NSRect(x: CGFloat(index) * 42, y: 5, width: 34, height: 20))
-            field.isEditable = true; field.isSelectable = true
-            field.font = NSFont.monospacedSystemFont(ofSize: 16, weight: .medium); field.alignment = .center
-            field.isBezeled = false; field.isBordered = false; field.drawsBackground = false
-            field.backgroundColor = selectionBackground; field.textColor = panelText
-            field.focusRingType = .none; field.delegate = self
-            field.setAccessibilityLabel("Code digit \(index + 1) of 6")
-            fields.append(field); addSubview(field)
-        }
-    }
-    required init?(coder: NSCoder) { fatalError() }
-    override func draw(_ dirtyRect: NSRect) {
-        selectionBackground.setFill()
-        for index in 0..<6 {
-            NSRect(x: CGFloat(index) * 42, y: 0, width: 34, height: 30).fill()
-        }
-    }
-    func clear() { fields.forEach { $0.stringValue = "" } }
-    func focus() { window?.makeFirstResponder(fields[0]) }
-    func controlTextDidChange(_ notification: Notification) {
-        guard let field = notification.object as? NSTextField,
-              let index = fields.firstIndex(of: field) else { return }
-        let digits = field.stringValue.filter { $0 >= "0" && $0 <= "9" }
-        if digits.isEmpty { field.stringValue = ""; return }
-        // A full pasted code fills every slot, regardless of the current focus.
-        let start = digits.count >= 6 ? 0 : index
-        let characters = Array(digits.prefix(6))
-        for (offset, digit) in characters.enumerated() where start + offset < 6 {
-            fields[start + offset].stringValue = String(digit)
-        }
-        let next = min(5, start + characters.count)
-        window?.makeFirstResponder(fields[next]); fields[next].selectText(nil)
-    }
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        if selector == #selector(NSResponder.insertNewline(_:)) { onSubmit?(); return true }
-        if selector == #selector(NSResponder.deleteBackward(_:)),
-           let field = control as? NSTextField, field.stringValue.isEmpty,
-           let index = fields.firstIndex(of: field), index > 0 {
-            fields[index - 1].stringValue = ""; window?.makeFirstResponder(fields[index - 1]); return true
-        }
-        return false
-    }
-}
-
-final class UpdateSignInView: NSView {
-    let heading = NSTextField(labelWithString: "SIGN IN FOR UPDATES")
-    let detail = NSTextField(wrappingLabelWithString: "Use the email you purchased Ratio with.")
-    let input = NSTextField()
-    var emailBackground: NSView!
-    let codeInput = CodeInputView(frame: NSRect(x: 24, y: 175, width: 244, height: 30))
-    let message = NSTextField(wrappingLabelWithString: "")
-    let submit = GridButton(title: "SEND CODE", target: nil, action: nil)
-    let back = GridButton(title: "LATER", target: nil, action: nil)
-    var onClose: (() -> Void)?
-    var onVerified: ((UpdateCredential) -> Void)?
-    var challenge: String?
-    var busy = false
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        appearance = NSAppearance(named: lightMode ? .aqua : .darkAqua)
-        wantsLayer = true; layer?.backgroundColor = panelBackground.cgColor
-        for label in [heading, detail, message] { label.font = interfaceFont; label.textColor = panelText; addSubview(label) }
-        heading.frame = NSRect(x: 24, y: 287, width: 312, height: 22)
-        detail.frame = NSRect(x: 24, y: 225, width: 312, height: 44)
-        emailBackground = NSView(frame: NSRect(x: 24, y: 179, width: 312, height: 26))
-        emailBackground.wantsLayer = true; emailBackground.layer?.backgroundColor = selectionBackground.cgColor
-        addSubview(emailBackground)
-        input.isEditable = true; input.isSelectable = true
-        input.isBezeled = false; input.isBordered = false; input.drawsBackground = false
-        input.frame = NSRect(x: 28, y: 182, width: 304, height: 20)
-        input.font = NSFont.monospacedSystemFont(ofSize: 15, weight: .regular); input.textColor = panelText; input.backgroundColor = selectionBackground
-        input.placeholderAttributedString = NSAttributedString(string: "Purchase email", attributes: [.font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular), .foregroundColor: NSColor(calibratedWhite: lightMode ? 0.40 : 0.62, alpha: 1)]); input.focusRingType = .none
-        input.target = self; input.action = #selector(send); addSubview(input)
-        codeInput.isHidden = true; codeInput.onSubmit = { [weak self] in self?.send() }; addSubview(codeInput)
-        message.frame = NSRect(x: 24, y: 65, width: 312, height: 76); message.textColor = .gray
-        submit.frame = NSRect(x: 0, y: 0, width: 240, height: 44); back.frame = NSRect(x: 240, y: 0, width: 120, height: 44)
-        for b in [submit, back] { b.isBordered = false; b.setButtonType(.momentaryPushIn); b.target = self; addSubview(b) }
-        submit.action = #selector(send); back.action = #selector(goBack)
-    }
-    required init?(coder: NSCoder) { fatalError() }
-    @objc func goBack() {
-        guard !busy else { return }
-        if challenge != nil {
-            challenge = nil; codeInput.isHidden = true; codeInput.clear(); input.isHidden = false; emailBackground.isHidden = false
-            window?.makeFirstResponder(input)
-            heading.stringValue = "SIGN IN FOR UPDATES"; detail.stringValue = "Use the email you purchased Ratio with."
-            input.stringValue = ""; input.placeholderAttributedString = NSAttributedString(string: "Purchase email", attributes: [.font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular), .foregroundColor: NSColor(calibratedWhite: lightMode ? 0.40 : 0.62, alpha: 1)]); submit.title = "SEND CODE"; back.title = "LATER"; message.stringValue = ""
-        } else { onClose?() }
-    }
-    @objc func send() {
-        guard !busy else { return }
-        let value = challenge == nil ? input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) : codeInput.stringValue
-        if challenge != nil && value.range(of: "^[0-9]{6}$", options: .regularExpression) == nil { message.stringValue = "Enter the six-digit code from your email."; return }
-        if challenge == nil && (value.count > 254 || value.range(of: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$", options: .regularExpression) == nil) { message.stringValue = "Enter your purchase email."; return }
-        let verifying = challenge != nil
-        let body = verifying ? ["challengeId": challenge!, "code": value] : ["email": value]
-        var req = URLRequest(url: URL(string: "https://visualizevalue.com/api/ratio/auth/" + (verifying ? "verify" : "request"))!)
-        req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type"); req.timeoutInterval = 20
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        busy = true; submit.isEnabled = false; back.isEnabled = false; message.stringValue = verifying ? "Checking code…" : "Sending code…"
-        URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.busy = false; self.submit.isEnabled = true; self.back.isEnabled = true
-                guard error == nil, let data = data, let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    self.message.stringValue = "Couldn’t connect. Please try again."; return
-                }
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                    self.message.stringValue = result["error"] as? String ?? "Please try again shortly."; return
-                }
-                if verifying {
-                    guard let token = result["token"] as? String, let email = result["email"] as? String,
-                        token.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { self.message.stringValue = "Please request a new code."; return }
-                    let credential = UpdateCredential(token: token, email: email)
-                    guard credential.store() else { self.message.stringValue = "Couldn’t save your sign-in to Keychain. Please request a new code."; return }
-                    self.onVerified?(credential)
-                } else {
-                    guard let id = result["challengeId"] as? String else { self.message.stringValue = "Please try again."; return }
-                    self.challenge = id; self.heading.stringValue = "CHECK YOUR EMAIL"
-                    self.detail.stringValue = "If this email has a Ratio purchase, a six-digit code is on its way."
-                    self.input.isHidden = true; self.emailBackground.isHidden = true; self.codeInput.clear(); self.codeInput.isHidden = false; self.submit.title = "VERIFY CODE"; self.back.title = "BACK"
-                    self.message.stringValue = "Code expires in 10 minutes. Check spam, or go back to request another code."
-                    self.codeInput.focus()
-                }
-            }
-        }.resume()
-    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var updaterController: SPUStandardUpdaterController!
-    var updaterStarted = false
-    var signInView: UpdateSignInView?
     var ledger = Ledger(day: dayKey())
     var resetUndo: ResetSnapshot?
     var resetUndoTimer: Timer?
@@ -919,7 +778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let credential = UpdateCredential.load() {
             updaterController.updater.httpHeaders = ["Authorization": "Bearer " + credential.token]
             do {
-                try updaterController.updater.start(); updaterStarted = true
+                try updaterController.updater.start()
                 enableAutomaticUpdates()
             } catch { NSLog("Ratio updater could not start") }
         }
@@ -957,7 +816,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RunLoop.main.add(timer!, forMode: .common)
         panel.applyTheme(); render(); showPopover(); checkBrowser()
         reportTelemetry()
-        if UpdateCredential.load() == nil { showUpdateSignIn() }
     }
     func rollover() {
         let today = dayKey()
@@ -1085,10 +943,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
             popover.performClose(nil)
             let menu = NSMenu()
-            let item = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
-            item.target = self; menu.addItem(item)
-            let account = NSMenuItem(title: UpdateCredential.load() == nil ? "Sign In for Updates…" : "Update Account…", action: #selector(updateAccount), keyEquivalent: "")
-            account.target = self; menu.addItem(account)
+            if UpdateCredential.load() != nil {
+                let item = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+                item.target = self; menu.addItem(item)
+            }
             let telemetry = NSMenuItem(title: "Share Anonymous Total", action: #selector(toggleTelemetry), keyEquivalent: "")
             telemetry.target = self; telemetry.state = telemetryEnabled ? .on : .off; menu.addItem(telemetry)
             menu.addItem(.separator())
@@ -1099,10 +957,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func checkForUpdates() {
         save()
-        guard UpdateCredential.load() != nil else { showUpdateSignIn(); return }
         updaterController.checkForUpdates(nil)
     }
-    @objc func updateAccount() { showUpdateSignIn() }
     @objc func toggleTelemetry() {
         telemetryEnabled.toggle(); defaults.set(telemetryEnabled, forKey: "anonymousTotalsEnabled")
         if telemetryEnabled { reportTelemetry() }
@@ -1124,27 +980,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func enableAutomaticUpdates() {
         updaterController.updater.automaticallyChecksForUpdates = true
         updaterController.updater.automaticallyDownloadsUpdates = true
-    }
-    func showUpdateSignIn() {
-        showPopover()
-        if signInView == nil {
-            let view = UpdateSignInView(frame: panel.bounds)
-            view.onClose = { [weak self] in self?.signInView?.removeFromSuperview(); self?.signInView = nil }
-            view.onVerified = { [weak self] credential in
-                guard let self = self else { return }
-                self.updaterController.updater.httpHeaders = ["Authorization": "Bearer " + credential.token]
-                if !self.updaterStarted {
-                    do { try self.updaterController.updater.start(); self.updaterStarted = true } catch { return }
-                }
-                self.enableAutomaticUpdates()
-                self.signInView?.removeFromSuperview(); self.signInView = nil
-                self.popover.performClose(nil)
-                self.updaterController.checkForUpdates(nil)
-            }
-            panel.addSubview(view, positioned: .above, relativeTo: nil); signInView = view
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        panel.window?.makeKey(); panel.window?.makeFirstResponder(signInView?.input)
     }
     @objc func togglePopover() { if popover.isShown { popover.performClose(nil) } else { showPopover() } }
     func showPopover() {
