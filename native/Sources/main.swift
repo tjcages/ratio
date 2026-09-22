@@ -157,8 +157,14 @@ enum LoginItem {
             if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch { NSLog("Ratio could not update its login item") }
     }
+    // Registers Ratio and reports whether it will now open at login.
+    static func enable() -> Bool {
+        set(true)
+        return isEnabled
+    }
     static func openSystemSettings() {
-        if #available(macOS 13.0, *) { SMAppService.openSystemSettingsLoginItems() }
+        if #available(macOS 13.0, *) { SMAppService.openSystemSettingsLoginItems(); return }
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preferences.users") { NSWorkspace.shared.open(url) }
     }
 }
 
@@ -310,7 +316,6 @@ final class SettingsView: NSView {
         loginOn.title = LoginItem.needsApproval ? "Approve" : "On"
         loginOn.toolTip = LoginItem.needsApproval ? "Allow Ratio in System Settings" : nil
         loginOn.state = enabled ? .on : .off; loginOff.state = enabled ? .off : .on
-        loginOn.isEnabled = LoginItem.isAvailable; loginOff.isEnabled = LoginItem.isAvailable
         dark.state = lightMode ? .off : .on; light.state = lightMode ? .on : .off
         for button in [loginOff, loginOn, dark, light] { button.needsDisplay = true }
         needsDisplay = true
@@ -327,7 +332,7 @@ final class SettingsView: NSView {
             hairline(NSRect(x: 0, y: y + 44 - pixel, width: bounds.width, height: pixel))
         }
         if !LoginItem.isAvailable {
-            ("Open at login requires macOS 13 or newer." as NSString).draw(at: NSPoint(x: 16, y: CGFloat(rows.count * 44) + 13), withAttributes: muted)
+            ("Add Ratio in Users & Groups → Login Items." as NSString).draw(at: NSPoint(x: 16, y: CGFloat(rows.count * 44) + 13), withAttributes: muted)
         }
     }
 }
@@ -505,7 +510,8 @@ final class RatioView: NSView {
         applyTheme(); owner?.render()
     }
     @objc func enableLogin() {
-        if LoginItem.needsApproval { LoginItem.openSystemSettings() } else { LoginItem.set(true) }
+        // Anything short of enabled needs the user's approval in System Settings.
+        if !LoginItem.enable() { LoginItem.openSystemSettings() }
         owner?.render()
     }
     @objc func disableLogin() { LoginItem.set(false); owner?.render() }
