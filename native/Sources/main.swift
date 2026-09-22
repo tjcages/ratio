@@ -472,12 +472,14 @@ final class ScrollingTitle: NSView {
     private var travel: CGFloat = 0
     static let pause: Double = 2
     static let pointsPerSecond: Double = 24
+    // Previews raise this so titles stay sharp when rendered at 2x on a 1x display.
+    static var minimumContentsScale: CGFloat = 1
 
     init(text: String, color: NSColor, frame: NSRect) {
         self.text = text; self.color = color
         super.init(frame: frame)
         wantsLayer = true; layer?.masksToBounds = true
-        textLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        textLayer.contentsScale = max(NSScreen.main?.backingScaleFactor ?? 2, Self.minimumContentsScale)
         textLayer.string = NSAttributedString(string: text, attributes: [.font: interfaceFont, .foregroundColor: color])
         layer?.addSublayer(textLayer)
         setAccessibilityElement(true); setAccessibilityRole(.staticText)
@@ -502,7 +504,7 @@ final class ScrollingTitle: NSView {
         travel = Self.distance(textWidth: width, availableWidth: bounds.width)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         textLayer.frame = NSRect(x: 0, y: 0, width: max(width, bounds.width), height: bounds.height)
-        textLayer.contentsScale = window?.backingScaleFactor ?? 2
+        textLayer.contentsScale = max(window?.backingScaleFactor ?? 2, Self.minimumContentsScale)
         CATransaction.commit()
     }
     override func layout() { super.layout(); updateGeometry(); syncVisibility() }
@@ -1686,6 +1688,7 @@ if CommandLine.arguments.contains("--browser-test") || CommandLine.arguments.con
     precondition(view.showingHistory && !view.showingSettings && view.settingsView.isHidden)
     view.toggleHistory()
     print("PASS: native settings panel, theme buttons, and history/settings exclusivity")
+    ScrollingTitle.minimumContentsScale = 2
     for variant in ["collapsed", "expanded", "light", "history", "settings"] {
         lightMode = variant == "light"
         owner.expandedBrowsers = variant == "collapsed" ? [] : [dia]
@@ -1693,7 +1696,9 @@ if CommandLine.arguments.contains("--browser-test") || CommandLine.arguments.con
         view.showingSettings = variant == "settings"; view.updateNavigation()
         owner.idle = false
         view.applyTheme(); owner.render(); view.display()
-        let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+        // Render at 2x so previews stay sharp on Retina displays and in the README.
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width) * 2, pixelsHigh: Int(view.bounds.height) * 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        bitmap.size = view.bounds.size
         view.cacheDisplay(in: view.bounds, to: bitmap)
         try! bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments.last! + "/ratio-" + variant + ".png"))
     }
