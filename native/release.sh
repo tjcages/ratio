@@ -5,6 +5,7 @@ set -eu
 cd "$(dirname "$0")"
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Ratio.app/Contents/Info.plist)
 tag="v$version"
+repo=$(git remote get-url origin | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')
 if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
   print -u2 "$tag is already released. Bump the version in Ratio.app/Contents/Info.plist first."; exit 1
 fi
@@ -15,10 +16,10 @@ git fetch -q origin main
 REQUIRE_NOTARIZED=1 ./package.sh
 
 if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-  gh release create "$tag" dist/Ratio.dmg dist/Ratio.zip --title "Ratio $version" --target "$(git rev-parse HEAD)" --latest --notes-file ../RELEASE-NOTES.md
+  gh release create "$tag" dist/Ratio.dmg dist/Ratio.zip --title "Ratio $version" --target "$(git rev-parse HEAD)" --latest --notes-file ../RELEASE-NOTES.md --repo "$repo"
 else
   # Without the GitHub CLI, finish in the browser: the page opens with the tag filled in.
-  open "https://github.com/tjcages/ratio/releases/new?tag=$tag&title=Ratio%20$version"
+  open "https://github.com/$repo/releases/new?tag=$tag&title=Ratio%20$version"
   open -R dist/Ratio.dmg
   print "Drag Ratio.dmg and Ratio.zip from the Finder window onto the release page, paste RELEASE-NOTES.md, and publish."
 fi
