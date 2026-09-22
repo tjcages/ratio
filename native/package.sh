@@ -1,25 +1,32 @@
 #!/bin/zsh
 # Build Ratio and package it for download as dist/Ratio.dmg and dist/Ratio.zip.
-# Set SIGN_IDENTITY to a "Developer ID Application" identity to sign for distribution, and
-# NOTARY_APPLE_ID, NOTARY_TEAM_ID and NOTARY_PASSWORD (an app-specific password) to notarize.
-# Without them the app keeps build.sh's ad-hoc signature.
+# Signs with the first "Developer ID Application" identity in your keychain (or SIGN_IDENTITY),
+# and notarizes with the notarytool keychain profile NOTARY_PROFILE (default "notary"), created
+# once per Mac with `xcrun notarytool store-credentials notary`. Without an identity the app keeps
+# build.sh's ad-hoc signature; REQUIRE_NOTARIZED=1 makes a missing identity or profile an error.
 set -eu
 cd "$(dirname "$0")"
 ./build.sh
-identity=${SIGN_IDENTITY:-}
+identity=${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/"Developer ID Application/ { print $2; exit }')}
+profile=${NOTARY_PROFILE:-notary}
 notarize=false
-[[ -n "$identity" && -n "${NOTARY_APPLE_ID:-}" && -n "${NOTARY_TEAM_ID:-}" && -n "${NOTARY_PASSWORD:-}" ]] && notarize=true
+[[ -n "$identity" ]] && xcrun notarytool history --keychain-profile "$profile" >/dev/null 2>&1 && notarize=true
+if [[ "${REQUIRE_NOTARIZED:-}" == 1 ]] && ! $notarize; then
+  [[ -z "$identity" ]] && print -u2 'No "Developer ID Application" certificate in your keychain. Create one in Xcode → Settings → Accounts → Manage Certificates.'
+  [[ -n "$identity" ]] && print -u2 "No notarytool profile \"$profile\". Run once: xcrun notarytool store-credentials $profile --apple-id <email> --team-id <team id>"
+  exit 1
+fi
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Ratio.app/Contents/Info.plist)
 rm -rf dist && mkdir -p dist
 
 # Submit a file to Apple's notary service and fail with its log unless it is accepted.
 submit() {
   local result id
-  result=$(xcrun notarytool submit "$1" --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" --wait --output-format json)
+  result=$(xcrun notarytool submit "$1" --keychain-profile "$profile" --wait --output-format json)
   print -r -- "$result"
   id=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$result")
   if [[ $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["status"])' "$result") != Accepted ]]; then
-    xcrun notarytool log "$id" --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD"
+    xcrun notarytool log "$id" --keychain-profile "$profile"
     exit 1
   fi
 }

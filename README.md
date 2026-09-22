@@ -58,17 +58,20 @@ open Ratio.app
 
 ## Releasing
 
-GitHub Actions builds, tests, and packages every pull request and push (see `.github/workflows/build.yml`); the DMG, zip, and interface screenshots are attached to each run. Pushes to `main` and manual runs sign with a Developer ID and notarize when these repository secrets are set (pull requests always build ad-hoc):
+Releases are signed with a Developer ID and notarized on your Mac.
 
-| Secret | Value |
-|---|---|
-| `MACOS_CERTIFICATE_P12` | Base64 of your exported **Developer ID Application** certificate and private key (`base64 -i Certificates.p12`) |
-| `MACOS_CERTIFICATE_PASSWORD` | The password you set when exporting the `.p12` |
-| `APPLE_ID` | Your Apple Developer account email |
-| `APPLE_APP_PASSWORD` | An app-specific password from [account.apple.com](https://account.apple.com) |
-| `APPLE_TEAM_ID` | Your 10-character Team ID from [developer.apple.com/account](https://developer.apple.com/account) |
+One-time setup per Mac, not per project:
 
-To publish a release, increment `CFBundleShortVersionString` and `CFBundleVersion` in `native/Ratio.app/Contents/Info.plist` and update `RELEASE-NOTES.md`. When that reaches `main`, the workflow creates release `v<version>` and the download link above points to it. Never change the bundle identifier; it keeps existing users' data.
+1. Create a **Developer ID Application** certificate in Xcode → Settings → Accounts → Manage Certificates.
+2. Save your notarization login: `xcrun notarytool store-credentials notary --apple-id <email> --team-id <team id>`. It asks for an app-specific password from [account.apple.com](https://account.apple.com).
+
+For each release, bump `CFBundleShortVersionString` and `CFBundleVersion` in `native/Ratio.app/Contents/Info.plist`, update `RELEASE-NOTES.md`, merge to `main`, then run:
+
+```sh
+native/release.sh
+```
+
+It builds, signs, notarizes, staples, checks the result with Gatekeeper, and publishes release `v<version>`, which the download link above points to. Publishing uses the GitHub CLI when it's signed in; otherwise it opens the new-release page and the files in Finder. Never change the bundle identifier; it keeps existing users' data.
 
 ## Contributing
 
