@@ -23,16 +23,6 @@ jobs:
           mkdir -p native/dist/previews
           native/Ratio.app/Contents/MacOS/Ratio --preview "$PWD/native/dist/previews"
 
-      - name: Commit screenshots to this branch (temporary)
-        if: github.event_name == 'pull_request'
-        run: |
-          git fetch -q origin "$GITHUB_HEAD_REF"
-          git checkout -q -B shots "origin/$GITHUB_HEAD_REF"
-          mkdir -p docs/previews && cp native/dist/previews/*.png docs/previews/
-          git add docs/previews
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Add rendered previews"
-          git push -q origin "HEAD:$GITHUB_HEAD_REF"
-
       - uses: actions/upload-artifact@v4
         with:
           name: Ratio

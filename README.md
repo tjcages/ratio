@@ -2,7 +2,9 @@
 
 Create more. Consume less.
 
-### [⬇ Download Ratio for macOS](https://github.com/tjcages/ratio/releases/latest/download/Ratio.dmg)
+<img src="docs/screenshot.png" width="360" alt="Ratio's menu-bar panel: 87% creating, 13% consuming, with a browser expanded into its pages and a create or consume choice for each">
+
+[Download Ratio for macOS ⬇](https://github.com/tjcages/ratio/releases/latest/download/Ratio.dmg)
 
 Universal app for Apple silicon and Intel · macOS 12 or newer · [All releases](https://github.com/tjcages/ratio/releases)
 
