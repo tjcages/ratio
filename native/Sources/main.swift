@@ -1693,7 +1693,9 @@ if CommandLine.arguments.contains("--browser-test") || CommandLine.arguments.con
         view.showingSettings = variant == "settings"; view.updateNavigation()
         owner.idle = false
         view.applyTheme(); owner.render(); view.display()
-        let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+        // Render at 2x so previews stay sharp on Retina displays and in the README.
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width) * 2, pixelsHigh: Int(view.bounds.height) * 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        bitmap.size = view.bounds.size
         view.cacheDisplay(in: view.bounds, to: bitmap)
         try! bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments.last! + "/ratio-" + variant + ".png"))
     }
