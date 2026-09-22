@@ -12,10 +12,37 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
+    env:
+      # Pull requests build ad-hoc; pushes and manual runs sign and notarize once the secrets exist.
+      SIGN: ${{ github.event_name != 'pull_request' && secrets.MACOS_CERTIFICATE_P12 != '' }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Import Developer ID certificate
+        if: env.SIGN == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk '/Developer ID Application/ { print $2; exit }')
+          [ -n "$identity" ] || { echo "No Developer ID Application identity in MACOS_CERTIFICATE_P12"; exit 1; }
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
       - name: Build, self-test, and package
+        env:
+          NOTARY_APPLE_ID: ${{ env.SIGN == 'true' && secrets.APPLE_ID || '' }}
+          NOTARY_TEAM_ID: ${{ env.SIGN == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          NOTARY_PASSWORD: ${{ env.SIGN == 'true' && secrets.APPLE_APP_PASSWORD || '' }}
         run: native/package.sh
 
       - name: Run UI checks and render previews
