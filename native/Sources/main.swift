@@ -766,7 +766,7 @@ final class RatioView: NSView {
     @objc func chooseDark() { setTheme(light: false) }
     @objc func chooseLight() { setTheme(light: true) }
     func setTheme(light: Bool) {
-        lightMode = light; UserDefaults.standard.set(lightMode, forKey: "lightMode")
+        lightMode = light; (owner?.defaults ?? .standard).set(lightMode, forKey: "lightMode")
         applyTheme(); owner?.render()
     }
     @objc func enableLogin() {
@@ -1677,10 +1677,20 @@ if CommandLine.arguments.contains("--browser-test") || CommandLine.arguments.con
     window.orderOut(nil); movingTitle.syncVisibility()
     precondition(!movingTitle.isScrolling, "Hidden titles must stop animating")
     print("PASS: native marquee delay, live motion, reduced-motion preference, hidden-window stop")
-    for variant in ["collapsed", "expanded", "light", "history"] {
+    // Settings: the appearance buttons switch themes; the login row is left untouched.
+    view.toggleSettings()
+    precondition(view.showingSettings && !view.showingHistory && !view.settingsView.isHidden && view.reviewScroll.isHidden)
+    view.settingsView.light.performClick(nil); precondition(lightMode && view.settingsView.light.state == .on)
+    view.settingsView.dark.performClick(nil); precondition(!lightMode && view.settingsView.dark.state == .on)
+    view.toggleHistory()
+    precondition(view.showingHistory && !view.showingSettings && view.settingsView.isHidden)
+    view.toggleHistory()
+    print("PASS: native settings panel, theme buttons, and history/settings exclusivity")
+    for variant in ["collapsed", "expanded", "light", "history", "settings"] {
         lightMode = variant == "light"
         owner.expandedBrowsers = variant == "collapsed" ? [] : [dia]
         view.showingHistory = variant == "history"
+        view.showingSettings = variant == "settings"; view.updateNavigation()
         owner.idle = false
         view.applyTheme(); owner.render(); view.display()
         let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!

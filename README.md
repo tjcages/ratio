@@ -1,17 +1,22 @@
-> Personal build: no purchase prompt or paid-update sign-in. Download updates from the **Personal Builds** menu. This branch is separate from the upstream contribution.
-
 # Ratio
 
 Create more. Consume less.
 
+### [⬇ Download Ratio for macOS](https://github.com/tjcages/ratio/releases/latest/download/Ratio.dmg)
+
+Universal app for Apple silicon and Intel · macOS 12 or newer · [All releases](https://github.com/tjcages/ratio/releases)
+
 Ratio is a macOS menu-bar app that measures time in the active app or browser site, then lets you classify that time as creating or consuming. It shows the balance in the menu bar and keeps a local daily history.
 
-## Get Ratio
+## Install
 
-- **Signed app:** Buy the notarized, automatically updating build for $20 at [ratio.visualizevalue.com](https://ratio.visualizevalue.com/).
-- **Build it yourself:** Clone this repository and follow the instructions below.
+1. [Download `Ratio.dmg`](https://github.com/tjcages/ratio/releases/latest/download/Ratio.dmg), open it, and drag **Ratio** into **Applications**.
+2. Open Ratio from Applications. These builds are not notarized by Apple, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** next to Ratio. (On macOS 14 and earlier you can instead right-click Ratio and choose **Open**.)
+3. Ratio lives in the menu bar and opens at login by default. Change that, or switch between dark and light, from the settings button in the bottom-right corner of the panel.
 
-The paid build funds development and removes the work of compiling, signing, notarizing, and updating the app. The application source is available under GPL-3.0.
+To update, download the latest release and replace the app in Applications; your history and classifications are kept. **Personal Builds…** in Ratio's right-click menu opens the releases page. macOS may ask for browser Automation access again after an update.
+
+This is a personal build of [Visualize Value's Ratio](https://ratio.visualizevalue.com/) without purchase prompts. The application source is available under GPL-3.0.
 
 ## What it records
 
@@ -27,8 +32,8 @@ The paid build funds development and removes the work of compiling, signing, not
 - Notification Center is excluded from recording, today’s saved activity, and activity lists.
 - Overflowing titles pause for two seconds, then scroll at a steady speed with pauses at either end. Hidden titles stop; macOS Reduce Motion keeps titles still. Full titles remain available in tooltips and accessibility labels.
 - App usage, classifications, daily history, and preferences stay in macOS UserDefaults on your Mac.
-- Update authentication is stored in Keychain.
-- The signed build can share one anonymous cumulative tracked-time total. It never sends app names, site names, window titles, classifications, or daily history. This is enabled by default and can be disabled from **Share Anonymous Total** in the right-click menu. Self-built copies do not report unless they have a valid purchaser update credential.
+- **Open at login** uses the macOS login item list (macOS 13 or newer). It is on by default at first launch; turning it off in Settings is remembered. If macOS needs approval, **On** opens Login Items in System Settings.
+- Visualize Value's signed build can share one anonymous cumulative tracked-time total. It never sends app names, site names, window titles, classifications, or daily history. Copies without a Visualize Value purchaser credential, including these releases, never report. It can be disabled from **Share Anonymous Total** in the right-click menu.
 
 See [`native/Sources/main.swift`](native/Sources/main.swift) for the complete implementation.
 
@@ -41,16 +46,17 @@ See [`native/Sources/main.swift`](native/Sources/main.swift) for the complete im
 ## Build the Mac app
 
 ```sh
-git clone https://github.com/visualizevalue/ratio.git
+git clone https://github.com/tjcages/ratio.git
 cd ratio/native
-./setup-sparkle.sh
 ./build.sh
 open Ratio.app
 ```
 
-`build.sh` creates a universal Intel/Apple-silicon app, applies an ad-hoc local signature, and runs the accounting self-tests. An ad-hoc build may require right-clicking the app and choosing **Open**. It does not carry Visualize Value's Developer ID signature or Apple notarization.
+`build.sh` creates a universal Intel/Apple-silicon app, applies an ad-hoc local signature, and runs the accounting self-tests. `./package.sh` also builds `dist/Ratio.dmg` and `dist/Ratio.zip`. `Ratio.app/Contents/MacOS/Ratio --preview <folder>` runs the interface checks and saves screenshots to that folder.
 
-Automatic updates for the distributed build use Sparkle. Update downloads require a verified Ratio purchase; this does not prevent local builds or modify local tracking data.
+## Releasing
+
+GitHub Actions builds, tests, and packages every pull request and push (see `.github/workflows/build.yml`); the DMG, zip, and interface screenshots are attached to each run. To publish a release, increment `CFBundleShortVersionString` and `CFBundleVersion` in `native/Ratio.app/Contents/Info.plist` and update `RELEASE-NOTES.md`. When that reaches `main`, the workflow creates release `v<version>` and the download link above points to it. Never change the bundle identifier; it keeps existing users' data.
 
 ## Contributing
 
