@@ -8,8 +8,12 @@
 	<string>Ratio</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.visualizevalue.ratio.prototype</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>Ratio</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>0.4.1</string>
 	<key>CFBundleVersion</key>
