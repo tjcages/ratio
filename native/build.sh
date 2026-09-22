@@ -7,7 +7,7 @@ ditto vendor/Sparkle/Sparkle.framework Ratio.app/Contents/Frameworks/Sparkle.fra
 build_dir=$(mktemp -d "${TMPDIR:-/tmp}/ratio-universal.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT
 for architecture in arm64 x86_64; do
- xcrun swiftc -target "$architecture-apple-macos12.0" -module-cache-path "${TMPDIR:-/tmp}/ratio-swift-cache" Sources/main.swift -o "$build_dir/Ratio-$architecture" -framework AppKit -framework CoreGraphics -F vendor/Sparkle -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+ xcrun swiftc -target "$architecture-apple-macos12.0" -module-cache-path "${TMPDIR:-/tmp}/ratio-swift-cache" Sources/main.swift -o "$build_dir/Ratio-$architecture" -framework AppKit -framework CoreGraphics -F vendor/Sparkle -framework Sparkle -framework ServiceManagement -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 done
 lipo -create "$build_dir/Ratio-arm64" "$build_dir/Ratio-x86_64" -output Ratio.app/Contents/MacOS/Ratio
 
