@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -30,18 +30,3 @@ jobs:
             native/dist/Ratio.dmg
             native/dist/Ratio.zip
             native/dist/previews/*.png
-
-      # Each new CFBundleShortVersionString on main becomes a release; the README links to the latest one.
-      - name: Publish release
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' native/Ratio.app/Contents/Info.plist)
-          if gh release view "v$version" >/dev/null 2>&1; then
-            echo "v$version is already released; bump the version in Info.plist to publish a new one."
-          else
-            gh release create "v$version" native/dist/Ratio.dmg native/dist/Ratio.zip \
-              --title "Ratio $version" --target "$GITHUB_SHA" --latest \
-              --notes-file RELEASE-NOTES.md
-          fi

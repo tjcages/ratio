@@ -11,3 +11,4 @@ native/Ratio.app/Contents/_CodeSignature/
 native/vendor/
 native/Ratio.app/Contents/Frameworks/
 native/.release/
+native/Ratio.app/Contents/CodeResources

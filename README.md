@@ -13,10 +13,10 @@ Ratio is a macOS menu-bar app that measures time in the active app or browser si
 ## Install
 
 1. [Download `Ratio.dmg`](https://github.com/tjcages/ratio/releases/latest/download/Ratio.dmg), open it, and drag **Ratio** into **Applications**.
-2. Open Ratio from Applications. These builds are not notarized by Apple, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** next to Ratio. (On macOS 14 and earlier you can instead right-click Ratio and choose **Open**.)
+2. Open Ratio from Applications. Releases are signed with a Developer ID and notarized by Apple, so macOS opens them normally.
 3. Ratio lives in the menu bar and opens at login by default. Change that, or switch between dark and light, from the settings button in the bottom-right corner of the panel.
 
-To update, download the latest release and replace the app in Applications; your history and classifications are kept. **Personal Builds…** in Ratio's right-click menu opens the releases page. macOS may ask for browser Automation access again after an update.
+To update, download the latest release and replace the app in Applications; your history and classifications are kept. **Personal Builds…** in Ratio's right-click menu opens the releases page. Coming from 0.4.0 or a self-built copy, macOS asks for browser Automation access once more because the signature changed.
 
 This is a personal build of [Visualize Value's Ratio](https://ratio.visualizevalue.com/) without purchase prompts. The application source is available under GPL-3.0.
 
@@ -58,7 +58,20 @@ open Ratio.app
 
 ## Releasing
 
-GitHub Actions builds, tests, and packages every pull request and push (see `.github/workflows/build.yml`); the DMG, zip, and interface screenshots are attached to each run. To publish a release, increment `CFBundleShortVersionString` and `CFBundleVersion` in `native/Ratio.app/Contents/Info.plist` and update `RELEASE-NOTES.md`. When that reaches `main`, the workflow creates release `v<version>` and the download link above points to it. Never change the bundle identifier; it keeps existing users' data.
+Releases are signed with a Developer ID and notarized on your Mac.
+
+One-time setup per Mac, not per project:
+
+1. Create a **Developer ID Application** certificate in Xcode → Settings → Accounts → Manage Certificates.
+2. Save your notarization login: `xcrun notarytool store-credentials notary --apple-id <email> --team-id <team id>`. It asks for an app-specific password from [account.apple.com](https://account.apple.com).
+
+For each release, bump `CFBundleShortVersionString` and `CFBundleVersion` in `native/Ratio.app/Contents/Info.plist`, update `RELEASE-NOTES.md`, merge to `main`, then run:
+
+```sh
+native/release.sh
+```
+
+It builds, signs, notarizes, staples, checks the result with Gatekeeper, and publishes release `v<version>`, which the download link above points to. Publishing uses the GitHub CLI when it's signed in; otherwise it opens the new-release page and the files in Finder. Never change the bundle identifier; it keeps existing users' data.
 
 ## Contributing
 
