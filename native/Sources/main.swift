@@ -3,6 +3,7 @@ import CoreGraphics
 import Security
 import CryptoKit
 import QuartzCore
+import ServiceManagement
 
 func isIgnoredApp(_ id: String, name: String) -> Bool {
     let identifier = id.lowercased()
@@ -279,27 +280,6 @@ let unclassifiedColor = NSColor(srgbRed: 1, green: 159/255, blue: 10/255, alpha:
 var gridColor: NSColor { NSColor(white: lightMode ? 0.8 : 0.14, alpha: 1) }
 func hairline(_ rect: NSRect) { gridColor.setFill(); NSBezierPath(rect: rect).fill() }
 
-// Lucide Moon geometry, matching the web icon (ISC license).
-func drawWebMoon(in bounds: NSRect, color: NSColor, flipped: Bool) {
-    NSGraphicsContext.saveGraphicsState()
-    let transform = AffineTransform(translationByX: bounds.midX - 7, byY: bounds.midY + (flipped ? -7 : 7))
-    var scaled = transform
-    scaled.scale(x: 14 / 24, y: (flipped ? 14.0 : -14.0) / 24)
-    (scaled as NSAffineTransform).concat()
-    let p = NSBezierPath()
-    p.lineWidth = 2; p.lineCapStyle = .round; p.lineJoinStyle = .round
-    p.move(to: NSPoint(x: 20.985000000, y: 12.486000000))
-    p.curve(to: NSPoint(x: 11.836619803, y: 20.999415324), controlPoint1: NSPoint(x: 20.723859872, y: 17.323495733), controlPoint2: NSPoint(x: 16.680379204, y: 21.086329102))
-    p.curve(to: NSPoint(x: 2.999550507, y: 12.163278897), controlPoint1: NSPoint(x: 6.992860402, y: 20.912501545), controlPoint2: NSPoint(x: 3.086975635, y: 17.007029095))
-    p.curve(to: NSPoint(x: 11.512000000, y: 3.014000000), controlPoint1: NSPoint(x: 2.912125379, y: 7.319528698), controlPoint2: NSPoint(x: 6.674531862, y: 3.275650815))
-    p.curve(to: NSPoint(x: 11.914000000, y: 3.817000000), controlPoint1: NSPoint(x: 11.917000000, y: 2.992000000), controlPoint2: NSPoint(x: 12.129000000, y: 3.474000000))
-    p.curve(to: NSPoint(x: 12.759321576, y: 11.239678424), controlPoint1: NSPoint(x: 10.433186096, y: 6.186256558), controlPoint2: NSPoint(x: 10.783696807, y: 9.264053655))
-    p.curve(to: NSPoint(x: 20.182000000, y: 12.085000000), controlPoint1: NSPoint(x: 14.734946345, y: 13.215303193), controlPoint2: NSPoint(x: 17.812743442, y: 13.565813904))
-    p.curve(to: NSPoint(x: 20.985000000, y: 12.486000000), controlPoint1: NSPoint(x: 20.526000000, y: 11.870000000), controlPoint2: NSPoint(x: 21.007000000, y: 12.081000000))
-    color.setStroke(); p.stroke()
-    NSGraphicsContext.restoreGraphicsState()
-}
-
 func drawHistoryClock(in bounds: NSRect, color: NSColor) {
     NSGraphicsContext.saveGraphicsState()
     let transform = AffineTransform(translationByX: bounds.midX - 7, byY: bounds.midY - 7)
@@ -320,13 +300,67 @@ func drawHistoryClock(in bounds: NSRect, color: NSColor) {
     NSGraphicsContext.restoreGraphicsState()
 }
 
+// Lucide Arrow Left geometry, drawn at the same scale as the other icons.
 func drawBackArrow(in bounds: NSRect, color: NSColor) {
+    NSGraphicsContext.saveGraphicsState()
+    let transform = AffineTransform(translationByX: bounds.midX - 7, byY: bounds.midY - 7)
+    var scaled = transform
+    scaled.scale(x: 14 / 24, y: 14 / 24)
+    (scaled as NSAffineTransform).concat()
     let p = NSBezierPath()
-    p.lineWidth = 1.6; p.lineCapStyle = .round; p.lineJoinStyle = .round
-    p.move(to: NSPoint(x: bounds.midX + 6, y: bounds.midY)); p.line(to: NSPoint(x: bounds.midX - 6, y: bounds.midY))
-    p.move(to: NSPoint(x: bounds.midX - 6, y: bounds.midY)); p.line(to: NSPoint(x: bounds.midX, y: bounds.midY + 6))
-    p.move(to: NSPoint(x: bounds.midX - 6, y: bounds.midY)); p.line(to: NSPoint(x: bounds.midX, y: bounds.midY - 6))
+    p.lineWidth = 2; p.lineCapStyle = .round; p.lineJoinStyle = .round
+    p.move(to: NSPoint(x: 19, y: 12)); p.line(to: NSPoint(x: 5, y: 12))
+    p.move(to: NSPoint(x: 12, y: 19)); p.line(to: NSPoint(x: 5, y: 12)); p.line(to: NSPoint(x: 12, y: 5))
     color.setStroke(); p.stroke()
+    NSGraphicsContext.restoreGraphicsState()
+}
+
+// Lucide Settings 2 geometry (ISC license).
+func drawSettingsSliders(in bounds: NSRect, color: NSColor, flipped: Bool) {
+    NSGraphicsContext.saveGraphicsState()
+    let transform = AffineTransform(translationByX: bounds.midX - 7, byY: bounds.midY + (flipped ? -7 : 7))
+    var scaled = transform
+    scaled.scale(x: 14 / 24, y: (flipped ? 14.0 : -14.0) / 24)
+    (scaled as NSAffineTransform).concat()
+    let p = NSBezierPath()
+    p.lineWidth = 2; p.lineCapStyle = .round; p.lineJoinStyle = .round
+    p.move(to: NSPoint(x: 20, y: 7)); p.line(to: NSPoint(x: 11, y: 7))
+    p.move(to: NSPoint(x: 14, y: 17)); p.line(to: NSPoint(x: 5, y: 17))
+    p.appendOval(in: NSRect(x: 14, y: 14, width: 6, height: 6))
+    p.appendOval(in: NSRect(x: 4, y: 4, width: 6, height: 6))
+    color.setStroke(); p.stroke()
+    NSGraphicsContext.restoreGraphicsState()
+}
+
+// Open at login uses the system login item list; macOS 12 has no main-app API.
+enum LoginItem {
+    static var isAvailable: Bool {
+        if #available(macOS 13.0, *) { return true }
+        return false
+    }
+    static var isEnabled: Bool {
+        if #available(macOS 13.0, *) { return SMAppService.mainApp.status == .enabled }
+        return false
+    }
+    static var needsApproval: Bool {
+        if #available(macOS 13.0, *) { return SMAppService.mainApp.status == .requiresApproval }
+        return false
+    }
+    static func set(_ enabled: Bool) {
+        guard #available(macOS 13.0, *) else { return }
+        do {
+            if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch { NSLog("Ratio could not update its login item") }
+    }
+    // Registers Ratio and reports whether it will now open at login.
+    static func enable() -> Bool {
+        set(true)
+        return isEnabled
+    }
+    static func openSystemSettings() {
+        if #available(macOS 13.0, *) { SMAppService.openSystemSettingsLoginItems(); return }
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preferences.users") { NSWorkspace.shared.open(url) }
+    }
 }
 
 class GridButton: NSButton {
@@ -352,8 +386,8 @@ class GridButton: NSButton {
             let badge = countText
             let badgeSize = badge.size(withAttributes: badgeAttrs)
             badge.draw(at: NSPoint(x: circle.midX - badgeSize.width / 2, y: circle.midY - badgeSize.height / 2), withAttributes: badgeAttrs)
-        } else if title == "☾" {
-            drawWebMoon(in: bounds, color: attrs[.foregroundColor] as! NSColor, flipped: isFlipped)
+        } else if title == "⚙" {
+            drawSettingsSliders(in: bounds, color: attrs[.foregroundColor] as! NSColor, flipped: isFlipped)
         } else if title == "◷" {
             drawHistoryClock(in: bounds, color: attrs[.foregroundColor] as! NSColor)
         } else if title == "←" {
@@ -514,6 +548,55 @@ final class HistoryListView: NSView {
     }
 }
 
+final class SettingsView: NSView {
+    let loginOff = GridButton(title: "Off", target: nil, action: nil)
+    let loginOn = GridButton(title: "On", target: nil, action: nil)
+    let dark = GridButton(title: "Dark", target: nil, action: nil)
+    let light = GridButton(title: "Light", target: nil, action: nil)
+    let rows = ["OPEN AT LOGIN", "APPEARANCE"]
+    override var isFlipped: Bool { true }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        let pixel = 1 / (NSScreen.main?.backingScaleFactor ?? 2)
+        for (index, pair) in [[loginOff, loginOn], [dark, light]].enumerated() {
+            for (column, button) in pair.enumerated() {
+                button.font = interfaceFont; button.isBordered = false; button.setButtonType(.momentaryPushIn)
+                button.drawsGridEdges = false
+                // Inset one physical pixel so the row and column hairlines stay visible.
+                button.frame = NSRect(x: 184 + CGFloat(column * 88) + pixel, y: CGFloat(index * 44), width: 88 - pixel, height: 44 - pixel)
+                addSubview(button)
+            }
+        }
+        loginOff.setAccessibilityLabel("Don't open at login"); loginOn.setAccessibilityLabel("Open at login")
+        dark.setAccessibilityLabel("Dark mode"); light.setAccessibilityLabel("Light mode")
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    func refresh() {
+        let enabled = LoginItem.isEnabled
+        loginOn.title = LoginItem.needsApproval ? "Approve" : "On"
+        loginOn.toolTip = LoginItem.needsApproval ? "Allow Ratio in System Settings" : nil
+        loginOn.state = enabled ? .on : .off; loginOff.state = enabled ? .off : .on
+        dark.state = lightMode ? .off : .on; light.state = lightMode ? .on : .off
+        for button in [loginOff, loginOn, dark, light] { button.needsDisplay = true }
+        needsDisplay = true
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        let pixel = 1 / (window?.backingScaleFactor ?? 2)
+        let attrs: [NSAttributedString.Key: Any] = [.font: interfaceFont, .foregroundColor: panelText]
+        let muted: [NSAttributedString.Key: Any] = [.font: interfaceFont, .foregroundColor: NSColor.gray]
+        for (index, label) in rows.enumerated() {
+            let y = CGFloat(index * 44)
+            (label as NSString).draw(at: NSPoint(x: 16, y: y + 13), withAttributes: attrs)
+            hairline(NSRect(x: 184, y: y, width: pixel, height: 44))
+            hairline(NSRect(x: 272, y: y, width: pixel, height: 44))
+            hairline(NSRect(x: 0, y: y + 44 - pixel, width: bounds.width, height: pixel))
+        }
+        if !LoginItem.isAvailable {
+            ("Add Ratio in Users & Groups → Login Items." as NSString).draw(at: NSPoint(x: 16, y: CGFloat(rows.count * 44) + 13), withAttributes: muted)
+        }
+    }
+}
+
 final class CaretDividerView: NSView {
     weak var panel: NSView?
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -570,6 +653,8 @@ final class RatioView: NSView {
     let historyScroll = NSScrollView()
     let historyList = HistoryListView(frame: .zero)
     var showingHistory = false
+    let settingsView = SettingsView(frame: NSRect(x: 0, y: 44, width: 360, height: 220))
+    var showingSettings = false
     let reviewButton = GridButton(title: "Review sites", target: nil, action: nil)
     var reviewSignature = ""
     var showingApps: Bool { selectedTab == 1 }
@@ -583,12 +668,12 @@ final class RatioView: NSView {
     let pause = GridButton(title: "Pause", target: nil, action: #selector(AppDelegate.togglePause))
     let history = GridButton(title: "◷", target: nil, action: nil)
     let forget = GridButton(title: "Reset", target: nil, action: #selector(AppDelegate.resetAll))
-    let theme = GridButton(title: "☀", target: nil, action: #selector(toggleTheme))
+    let settings = GridButton(title: "⚙", target: nil, action: nil)
     let quit = GridButton(title: "Quit", target: NSApp, action: #selector(NSApplication.terminate(_:)))
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true; layer?.backgroundColor = panelBackground.cgColor
-        for button in [ratioTab, appsTab, consume, create, pause, history, forget, quit, theme] {
+        for button in [ratioTab, appsTab, consume, create, pause, history, forget, quit, settings] {
             button.font = interfaceFont; button.isBordered = false; button.setButtonType(.momentaryPushIn); addSubview(button)
         }
         ratioTab.target = self; ratioTab.action = #selector(showRatio)
@@ -625,8 +710,10 @@ final class RatioView: NSView {
         history.toolTip = "History"; history.setAccessibilityLabel("Show history")
         forget.frame = NSRect(x: 88, y: 0, width: 114, height: 44)
         quit.frame = NSRect(x: 202, y: 0, width: 114, height: 44)
-        theme.frame = NSRect(x: 316, y: 0, width: 44, height: 44)
-        theme.target = self; theme.drawsGridEdges = false; theme.invertsWhenHighlighted = false
+        settings.frame = NSRect(x: 316, y: 0, width: 44, height: 44)
+        settings.target = self; settings.action = #selector(toggleSettings)
+        settings.drawsGridEdges = false; settings.invertsWhenHighlighted = false
+        settings.toolTip = "Settings"; settings.setAccessibilityLabel("Show settings")
         pause.drawsBottomEdge = false; history.drawsBottomEdge = false; forget.drawsBottomEdge = false
         quit.drawsBottomEdge = false
         appScroll.frame = NSRect(x: 0, y: 108, width: 360, height: 244)
@@ -641,6 +728,11 @@ final class RatioView: NSView {
         reviewButton.frame = NSRect(x: 0, y: 44, width: 360, height: 64)
         reviewButton.target = self; reviewButton.action = #selector(showReview); addSubview(reviewButton)
         reviewButton.isHidden = true
+        settingsView.loginOff.target = self; settingsView.loginOff.action = #selector(disableLogin)
+        settingsView.loginOn.target = self; settingsView.loginOn.action = #selector(enableLogin)
+        settingsView.dark.target = self; settingsView.dark.action = #selector(chooseDark)
+        settingsView.light.target = self; settingsView.light.action = #selector(chooseLight)
+        addSubview(settingsView); settingsView.isHidden = true
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -671,10 +763,18 @@ final class RatioView: NSView {
             self.caretDivider = divider
         }
     }
-    @objc func toggleTheme() {
-        lightMode.toggle(); UserDefaults.standard.set(lightMode, forKey: "lightMode")
+    @objc func chooseDark() { setTheme(light: false) }
+    @objc func chooseLight() { setTheme(light: true) }
+    func setTheme(light: Bool) {
+        lightMode = light; UserDefaults.standard.set(lightMode, forKey: "lightMode")
         applyTheme(); owner?.render()
     }
+    @objc func enableLogin() {
+        // Anything short of enabled needs the user's approval in System Settings.
+        if !LoginItem.enable() { LoginItem.openSystemSettings() }
+        owner?.render()
+    }
+    @objc func disableLogin() { LoginItem.set(false); owner?.render() }
     func applyTheme() {
         layer?.backgroundColor = panelBackground.cgColor
         window?.backgroundColor = panelBackground
@@ -683,9 +783,7 @@ final class RatioView: NSView {
             if view is NSVisualEffectView { view.layer?.backgroundColor = panelBackground.cgColor }
             ancestor = view.superview
         }
-        theme.title = lightMode ? "☾" : "☀"
-        theme.setAccessibilityLabel(lightMode ? "Switch to dark mode" : "Switch to light mode")
-        theme.toolTip = lightMode ? "Dark mode" : "Light mode"
+        settingsView.refresh()
         reviewSignature = ""; caretDivider?.needsDisplay = true
         notifications.needsDisplay = true; needsDisplay = true
     }
@@ -699,10 +797,21 @@ final class RatioView: NSView {
     @objc func showApps() { selectedTab = 1; owner?.render() }
     @objc func toggleHistory() {
         showingHistory.toggle()
+        if showingHistory { showingSettings = false }
+        updateNavigation(); owner?.render()
+    }
+    @objc func toggleSettings() {
+        showingSettings.toggle()
+        if showingSettings { showingHistory = false }
+        updateNavigation(); owner?.render()
+    }
+    func updateNavigation() {
         history.title = showingHistory ? "←" : "◷"
         history.setAccessibilityLabel(showingHistory ? "Back to activity" : "Show history")
         history.toolTip = showingHistory ? "Back to activity" : "History"
-        owner?.render()
+        settings.title = showingSettings ? "←" : "⚙"
+        settings.setAccessibilityLabel(showingSettings ? "Back to activity" : "Show settings")
+        settings.toolTip = showingSettings ? "Back to activity" : "Settings"
     }
     func refreshApps() {
         guard owner?.contextMenuOpen != true else { return }
@@ -710,11 +819,19 @@ final class RatioView: NSView {
         ratioTab.isHidden = true; appsTab.isHidden = true
         totals.isHidden = true; context.isHidden = false
         consume.isHidden = true; create.isHidden = true
-        appScroll.isHidden = true; reviewScroll.isHidden = showingHistory
-        historyScroll.isHidden = !showingHistory
+        appScroll.isHidden = true; reviewScroll.isHidden = showingHistory || showingSettings
+        historyScroll.isHidden = !showingHistory; settingsView.isHidden = !showingSettings
         reviewButton.isHidden = true; note.isHidden = true
         history.state = showingHistory ? .on : .off
-        if showingHistory {
+        settings.state = showingSettings ? .on : .off
+        if showingSettings {
+            context.stringValue = "SETTINGS"
+            notifications.isHidden = true
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            trackedTotal.stringValue = version.map { "V" + $0 } ?? ""
+            trackedTotal.frame = NSRect(x: 180, y: 277, width: 164, height: 18)
+            settingsView.refresh()
+        } else if showingHistory {
             context.stringValue = "HISTORY"
             notifications.isHidden = true
             historyList.owner = owner
@@ -838,7 +955,7 @@ final class RatioView: NSView {
         ratioTab.state = selectedTab == 0 ? .on : .off; appsTab.state = selectedTab == 0 ? .off : .on
         let height = max(244, (owner?.ledger.apps?.count ?? 0) * 56)
         appList.setFrameSize(NSSize(width: 360, height: height)); appList.needsDisplay = true
-        for button in [ratioTab, appsTab, consume, create, pause, history, forget, quit, theme] { button.needsDisplay = true }
+        for button in [ratioTab, appsTab, consume, create, pause, history, forget, quit, settings] { button.needsDisplay = true }
     }
     required init?(coder: NSCoder) { fatalError() }
     override func draw(_ dirtyRect: NSRect) {
@@ -1141,6 +1258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         telemetryEnabled = defaults.object(forKey: "anonymousTotalsEnabled") == nil || defaults.bool(forKey: "anonymousTotalsEnabled")
         telemetryInstallID = defaults.string(forKey: "anonymousInstallID") ?? UUID().uuidString.lowercased()
         defaults.set(telemetryInstallID, forKey: "anonymousInstallID")
+        // Open at login by default once; later choices in Settings are respected.
+        if defaults.object(forKey: "openAtLoginDefaulted") == nil {
+            LoginItem.set(true); defaults.set(true, forKey: "openAtLoginDefaulted")
+        }
         // Migrate existing per-app history to explicit category contributions.
         if let history = ledger.apps, history.values.contains(where: { $0.createSeconds == nil || $0.consumeSeconds == nil }) {
             let attributed = history.values.reduce(0) { $0 + max(0, $1.seconds - ($1.unclassified ?? 0)) }
