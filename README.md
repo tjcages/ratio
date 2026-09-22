@@ -1,3 +1,5 @@
+> Personal build: no purchase prompt or paid-update sign-in. Download updates from the **Personal Builds** menu. This branch is separate from the upstream contribution.
+
 # Ratio
 
 Create more. Consume less.
